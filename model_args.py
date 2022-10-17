@@ -1,5 +1,7 @@
 import argparse
 import os, shutil, random, time
+
+# TODO remove extraneous args
 def parse_args(args):
     cmd = argparse.ArgumentParser(args[0], conflict_handler='resolve')
     cmd.add_argument('--seed', default=-1, type=int, help='The random seed.')
@@ -17,8 +19,10 @@ def parse_args(args):
 
     cmd.add_argument("--word_embedding", help="The path to word vectors.")
 
-    cmd.add_argument("--num_nonterminal", default=30, type=int, help="number of nonterminal categories")
-    cmd.add_argument("--num_preterminal", default=60, type=int, help="number of preterminal categories")
+    #cmd.add_argument("--num_nonterminal", default=30, type=int, help="number of nonterminal categories")
+    #cmd.add_argument("--num_preterminal", default=60, type=int, help="number of preterminal categories")
+    cmd.add_argument("--num_primitives", default=4, type=int, help="number of primitive categories")
+    cmd.add_argument("--max_cat_depth", default=2, type=int, help="maximum depth of a complex category (e.g. V-aN-bN has depth 2)")
     cmd.add_argument("--turn_off_char", default=False, action="store_true", help='turn off the char embedder')
 
     cmd.add_argument('--optimizer', default='sgd', choices=['sgd', 'adam', 'adagrad', 'asgd'],

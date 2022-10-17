@@ -30,6 +30,7 @@ def random_seed(seed_value, use_cuda):
         torch.cuda.manual_seed_all(seed_value) # gpu vars
 
 def train():
+    torch.autograd.set_detect_anomaly(True)
 
     opt = model_args.parse_args(sys.argv)
 
@@ -192,10 +193,15 @@ def train():
     if opt.model_type not in {"word", "char"}:
         raise ValueError('not recognized model type! {} '.format(opt.model_type))
     else:
-        pcfg_parser = SimpleCompPCFGCharNoDistinction(nt_states=opt.num_nonterminal, pret_states=opt.num_preterminal, num_chars=len(char_lexicon),
-                                           device=opt.device, eval_device=opt.eval_device, num_words=len(word_lexicon), model_type=opt.model_type,
-                                           state_dim=opt.state_dim, char_grams_lexicon=char_grams_lexicon,
-                                            all_words_char_features=all_words_char_features, rnn_hidden_dim=opt.rnn_hidden_dim)
+        pcfg_parser = SimpleCompPCFGCharNoDistinction(
+            num_primitives=opt.num_primitives, max_cat_depth=opt.max_cat_depth,
+            num_chars=len(char_lexicon), device=opt.device,
+            eval_device=opt.eval_device, num_words=len(word_lexicon),
+            model_type=opt.model_type, state_dim=opt.state_dim,
+            char_grams_lexicon=char_grams_lexicon, 
+            all_words_char_features=all_words_char_features,
+            rnn_hidden_dim=opt.rnn_hidden_dim
+        )
 
     model = CharPCFG(pcfg_parser, writer=writer)
 
@@ -233,6 +239,8 @@ def train():
         model.load_state_dict(checkpoint)
 
     for epoch in range(opt.start_epoch, opt.max_epoch):
+
+        print("CEC EPOCH: {}".format(epoch))
 
         if train_list and epoch >= len(train_list):
             break  # stop if doing the childes marker thing
@@ -278,6 +286,7 @@ def train():
     model.writer.close()
 
 def test():
+
 
     opt = model_args.parse_args(sys.argv)
 
@@ -420,10 +429,15 @@ def test():
     if opt.model_type not in {"word", "char"}:
         raise ValueError('not recognized model type! {} '.format(opt.model_type))
     else:
-        pcfg_parser = SimpleCompPCFGCharNoDistinction(nt_states=opt.num_nonterminal, pret_states=opt.num_preterminal, num_chars=len(char_lexicon),
-                                           device=opt.device, eval_device=opt.eval_device, num_words=len(word_lexicon), model_type=opt.model_type,
-                                           state_dim=opt.state_dim, char_grams_lexicon=char_grams_lexicon,
-                                            all_words_char_features=all_words_char_features, rnn_hidden_dim=opt.rnn_hidden_dim)
+        pcfg_parser = SimpleCompPCFGCharNoDistinction(
+            num_primitives=opt.num_primitives, max_cat_depth=opt.max_cat_depth,
+            num_chars=len(char_lexicon), device=opt.device,
+            eval_device=opt.eval_device, num_words=len(word_lexicon),
+            model_type=opt.model_type, state_dim=opt.state_dim,
+            char_grams_lexicon=char_grams_lexicon, 
+            all_words_char_features=all_words_char_features,
+            rnn_hidden_dim=opt.rnn_hidden_dim
+        )
 
     model = CharPCFG(pcfg_parser, writer=writer)
 

@@ -15,6 +15,7 @@ def train_model(epoch, opt, model, optimizer, train):
     """
     Training model for one epoch
     """
+    torch.autograd.set_detect_anomaly(True)
     model.train()
 
     slicing_flag = False

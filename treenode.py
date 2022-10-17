@@ -26,7 +26,6 @@ def nodes_to_tree(nodes, sent):
     for node in nodes:
         brackets[node.i] += '(' + str(node.k) + ' '
         brackets[node.j] = ')' + brackets[node.j]
-        # print(brackets)
     bracketed_string[::2] = brackets
     # print(bracketed_string)
     # exit()
@@ -47,10 +46,11 @@ def nodes_to_tree(nodes, sent):
     return this_tree, production_counters, (l_branch, r_branch)
 
 class Node:
-    def __init__(self, cat, i, j, D=0, K=0, parent=None):
+    def __init__(self, cat, cat_str, i, j, D=0, K=0, parent=None):
         self.D = D
         self.K = K
         self.cat = int(cat)
+        self.cat_str = cat_str
         self.i = i
         self.j = j
         self.s, self.d = -1, -1
@@ -73,7 +73,9 @@ class Node:
 
     def __unwind_cat(self):
         if self.D == -1:
-            self.k = self.cat
+            #self.k = self.cat
+            self.k = self.cat_str
+        # TODO figure out what this case is for
         elif self.K != 0 and self.D != -1:
             self.s, self.d, self.k = np.unravel_index(self.cat, (2, self.D+1, self.K))
             # return "s{} d{} {}".format(self.s, self.d, self.k)
@@ -93,7 +95,6 @@ def calc_branching_score(t):
     l_branch = 0
     # print(t)
     for position in t.treepositions():
-        # print(t[position])
         if not (isinstance(t[position],str) or isinstance(t[position][0],str)):
             if len(t[position][0]) == 2:
                 l_branch += 1

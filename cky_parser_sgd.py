@@ -1,7 +1,7 @@
 # import numpy as np
-import torch
-import logging
+import torch, logging, datetime
 from treenode import Node, nodes_to_tree
+import torch.nn.functional as F
 
 # from .cky_parser_lcg_sparse import sparse_vit_add_trick
 
@@ -15,15 +15,20 @@ def logsumexp_multiply(a, b):
 
 # for dense grammar only! ie D must be -1
 class batch_CKY_parser:
-    def __init__(self, nt=0, t=0, device='cpu'):
+    def __init__(
+        self, ix2cat, l2r, r2l,
+        nt=0, t=0, device='cpu'
+    ):
         self.D = -1
         self.K = nt
         self.lexis = None # Preterminal expansion part of the grammar (this will be dense)
         self.G = None     # Nonterminal expansion part of the grammar (usually be a sparse matrix representation)
         self.p0 = None
         # self.viterbi_chart = np.zeros_like(self.chart, dtype=np.float32)
+        self.ix2cat = ix2cat
+        self.l2r = l2r
+        self.r2l = r2l
         self.Q = nt + t
-
         self.this_sent_len = -1
         self.counter = 0
         self.vocab_prob_list = []
@@ -33,8 +38,10 @@ class batch_CKY_parser:
         else:
             self.device = 'cpu'
 
-    def set_models(self, p0, expansion, emission, pcfg_split=None):
-        self.log_G = expansion
+    def set_models(self, p0, expansion_l, expansion_r, emission, pcfg_split=None):
+        #self.log_G = expansion
+        self.log_G_l = expansion_l
+        self.log_G_r = expansion_r
         self.log_p0 = p0
         self.log_lexis = emission
         self.pcfg_split = pcfg_split
@@ -99,7 +106,6 @@ class batch_CKY_parser:
         self.right_chart[0] = self.left_chart[0]
 
         for ij_diff in range(1, sent_len):
-
             left_min = 0
             left_max = sent_len - ij_diff
             right_min = ij_diff
@@ -109,11 +115,38 @@ class batch_CKY_parser:
             b = self.left_chart[0:height, left_min:left_max] # (all_ijdiffs, i-j, batch, Q) a square of the left chart
             c = torch.flip(self.right_chart[0:height, right_min:right_max], dims=[0])
             #
-            dot_temp_mat = torch.logsumexp(b[...,None]+c[...,None,:], dim=0).view(sent_len-ij_diff, batch_size, -1)
-            # i-j, batch, Q**2
-            # dense
-            filtered_kron_mat = self.log_G + dot_temp_mat[:, :, None, :] # i-j, batch, Q, Q**2
-            y1 = torch.logsumexp(filtered_kron_mat, dim=-1) # i-j, batch, Q
+            dot_temp_mat = torch.logsumexp(b[...,None]+c[...,None,:], dim=0).view(sent_len-ij_diff, batch_size, self.Q, self.Q)
+
+
+            scores_l = self.log_G_l.to(self.device).repeat(left_max, batch_size, 1, 1)
+            # left_max x batch_size x Q x Q
+
+            #scores_r = F.log_softmax(self.log_G_r*self.rule_filter_r, dim=1) # Q x Q
+            scores_r = self.log_G_r.to(self.device).repeat(left_max, batch_size, 1, 1)
+
+            # left_max x batch_size x Q x Q
+
+            l2r_stacked = self.l2r.unsqueeze(dim=1).repeat(
+                left_max, batch_size, 1, 1
+            ).to(self.device)
+            # left_max x batch_size x Q
+
+            r2l_stacked = self.r2l.unsqueeze(dim=0).repeat(
+                left_max, batch_size, 1, 1
+            ).to(self.device)
+
+            # left_max x batch_size x Q
+            l_functor_prob = torch.gather(dot_temp_mat, dim=3, index=l2r_stacked).squeeze(dim=3)
+            # left_max x batch_size x Q
+            r_functor_prob = torch.gather(dot_temp_mat, dim=2, index=r2l_stacked).squeeze(dim=2)
+
+            # TODO can this be done without creating all the QxQ matrices?
+            y_l = scores_l + l_functor_prob[...,None,:]
+            y_r = scores_r + r_functor_prob[...,None,:]
+            y1 = torch.logsumexp(torch.stack([y_l, y_r]), dim=0)
+            #y1 = y_l
+            # left_max x batch_size x Q x Q
+            y1 = torch.logsumexp(y1, dim=3)
 
             self.left_chart[height, left_min:left_max] = y1
             self.right_chart[height, right_min:right_max] = y1
@@ -225,43 +258,75 @@ class batch_CKY_parser:
             b = self.left_chart[0:height, left_min:left_max] # (all_ijdiffs, i-j, batch, Q) a square of the left chart
             c = torch.flip(self.right_chart[0:height, right_min:right_max], dims=[0])
             #
-            dot_temp_mat = ( b[...,None]+c[...,None,:] ).view(height, left_max, batch_size, -1)
+            #dot_temp_mat = ( b[...,None]+c[...,None,:] ).view(height, left_max, batch_size, -1)
+            dot_temp_mat = ( b[...,None]+c[...,None,:] ).view(height, left_max, batch_size, self.Q, self.Q)
             # dot temp mat is all_ijdiffs, i-j, batch, Q2
 
-            # # argo 1: use less memory
-            # max_kbc_list, argmax_kbc_list = [], [] # i-j, batch
-            # for q in range(self.Q):
-            #     single_q_kron_mat = self.log_G[q] + dot_temp_mat #all_ijdiffs, i-j, batch, Q2
-            #     single_q_kron_mat = single_q_kron_mat.permute(1, 2, 0, 3).contiguous().view(left_max, batch_size, -1) # i-j, batch, all_ijdiffs*Q2
-            #     this_q_max_kbc, this_q_argmax_kbc = torch.max(single_q_kron_mat, dim=2) # i-j, batch
-            #     max_kbc_list.append(this_q_max_kbc)
-            #     argmax_kbc_list.append(this_q_argmax_kbc)
-            # max_kbc = torch.stack(max_kbc_list, dim=2)
-            # argmax_kbc = torch.stack(argmax_kbc_list, dim=2)
-            # # ----argo 1
+            scores_l = self.log_G_l.to(self.device).repeat(height, left_max, batch_size, 1, 1)
 
-            # argo 2: faster, but use a lot more memory
-            filtered_kron_mat = self.log_G + dot_temp_mat[:, :, :, None, :]
-            # filtered temp mat is all_ijdiffs, i-j, batch, Q, Q2
+            scores_r = self.log_G_r.to(self.device).repeat(height, left_max, batch_size, 1, 1)
 
-            filtered_kron_mat = filtered_kron_mat.permute(1,2,3,0,4).contiguous().view(left_max, batch_size, self.Q,
-                                                                                   -1) # permute the
-            # dims to get i-j, batch, Q, all_ijdiffs * Q2
+            l2r_stacked = self.l2r.unsqueeze(dim=1).repeat(
+                height, left_max, batch_size, 1, 1
+            ).to(self.device)
 
-            max_kbc, argmax_kbc = torch.max(filtered_kron_mat, dim=3) # i-j, batch, Q
+            r2l_stacked = self.r2l.unsqueeze(dim=0).repeat(
+                height, left_max, batch_size, 1, 1
+            ).to(self.device)
+            # height x left_max x batch_size x Q
+            l_functor_prob = torch.gather(dot_temp_mat, dim=4, index=l2r_stacked).squeeze(dim=4)
+            # height x left_max x batch_size x Q
+            r_functor_prob = torch.gather(dot_temp_mat, dim=3, index=r2l_stacked).squeeze(dim=3)
 
-            # # ----argo 2
+            lscores = scores_l + l_functor_prob[...,None,:]
+            rscores = scores_r + r_functor_prob[...,None,:]
 
-            ks = argmax_kbc // self.Q**2 + torch.arange(1, left_max+1)[:, None, None].to(self.device)
-            bc_cats = argmax_kbc % self.Q**2
-            b_cats =  bc_cats // self.Q
-            c_cats = bc_cats % self.Q
-            self.left_chart[height, left_min:left_max] = max_kbc
-            self.right_chart[height, right_min:right_max] = max_kbc
-            # print(ks.shape, b_cats.shape, c_cats.shape)
-            k_b_c = torch.stack((ks, b_cats,c_cats), dim=3).to('cpu')
+            # permute the dims to get i-j, batch, Q, height Q
+            lscores = lscores.permute(1,2,3,0,4).contiguous().view(
+                left_max, batch_size, self.Q, -1
+            )
 
-            backtrack_chart[ij_diff] = k_b_c
+            rscores = rscores.permute(1,2,3,0,4).contiguous().view(
+                left_max, batch_size, self.Q, -1
+            )
+            lmax_kbc, largmax_kbc = torch.max(lscores, dim=3)
+            rmax_kbc, rargmax_kbc = torch.max(rscores, dim=3)
+            # i-j, batch, Q
+
+
+            l_ks = largmax_kbc // (self.Q) + torch.arange(1, left_max+1)[:, None, None]. to(self.device)
+            l_bs = largmax_kbc % self.Q
+            l2r_repeat = self.l2r.repeat(
+                left_max, batch_size, 1
+            ).to(self.device)
+            l_cs = torch.gather(l2r_repeat, index=l_bs, dim=2)
+            l_kbc = torch.stack([l_ks, l_bs, l_cs], dim=0)
+
+            r_ks = rargmax_kbc // (self.Q) + torch.arange(1, left_max+1)[:, None, None]. to(self.device)
+            # c is right child, functor in this case
+            r_cs = rargmax_kbc % self.Q
+            r2l_repeat = self.r2l.repeat(
+                left_max, batch_size, 1
+            ).to(self.device)
+            r_bs = torch.gather(r2l_repeat, index=r_cs, dim=2)
+            r_kbc = torch.stack([r_ks, r_bs, r_cs], dim=0)
+            lr_kbc = torch.stack([l_kbc, r_kbc], dim=0)
+
+
+            lr_max = torch.stack([lmax_kbc, rmax_kbc], dim=0)
+            combined_max, combined_argmax = torch.max(lr_max, dim=0)
+
+            self.left_chart[height, left_min:left_max] = combined_max
+            self.right_chart[height, right_min:right_max] = combined_max
+
+            # repeat to gather the same k, b, and c
+            combined_argmax = combined_argmax.repeat(3, 1, 1, 1).unsqueeze(dim=0)
+            # TODO use different arrangement of dimensions initally to
+            # avoid need for permute
+            best_kbc = torch.gather(lr_kbc, index=combined_argmax, dim=0).squeeze(dim=0)
+            best_kbc = best_kbc.permute(1, 2, 3, 0)
+
+            backtrack_chart[ij_diff] = best_kbc
         self.right_chart = None
         return backtrack_chart
 
@@ -287,12 +352,13 @@ class batch_CKY_parser:
         assert self.this_sent_len > 0, "must call inside pass first!"
 
         A_cat = top_A[sent_index].item()
+        A_cat_str = str(self.ix2cat[A_cat])
 
         assert not ( torch.isnan(A_ll[sent_index]) or torch.isinf(A_ll[sent_index]) or A_ll[sent_index].item() == 0 ), \
             'something wrong with viterbi parsing. {}'.format(A_ll[sent_index])
 
         # prepare the downward sampling pass
-        top_node = Node(A_cat, 0, sent_len, self.D, self.K)
+        top_node = Node(A_cat, A_cat_str, 0, sent_len, self.D, self.K)
         if sent_len > 1:
             expanding_nodes.append(top_node)
         else:
@@ -300,18 +366,24 @@ class batch_CKY_parser:
         # rules.append(Rule(None, A_cat))
         # print(backtrack_chart)
         while expanding_nodes:
-            # print(sent_len, expanding_nodes)
             working_node = expanding_nodes.pop()
             ij_diff = working_node.j - working_node.i - 1
 
             k_b_c = backtrack_chart[ij_diff][ working_node.i, sent_index,
                                                         working_node.cat]
             split_point, b, c = k_b_c[0].item(), k_b_c[1].item(), k_b_c[2].item()
+            if b == self.Q - 1:
+                b_str = "NULL"
+            else:
+                b_str = str(self.ix2cat[b])
+            if c == self.Q - 1:
+                c_str = "NULL"
+            else:
+                c_str = str(self.ix2cat[c])
 
             expanded_nodes.append(working_node)
-            # print(expanding_nodes)
-            node_b = Node(b, working_node.i, split_point, self.D, self.K, parent=working_node)
-            node_c = Node(c, split_point, working_node.j, self.D, self.K, parent=working_node)
+            node_b = Node(b, b_str, working_node.i, split_point, self.D, self.K, parent=working_node)
+            node_c = Node(c, c_str, split_point, working_node.j, self.D, self.K, parent=working_node)
             # print(node_b, node_c)
             if node_b.d == self.D and node_b.j - node_b.i != 1:
                 print(node_b)
