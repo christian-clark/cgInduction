@@ -195,6 +195,7 @@ def train():
     else:
         pcfg_parser = SimpleCompPCFGCharNoDistinction(
             num_primitives=opt.num_primitives, max_cat_depth=opt.max_cat_depth,
+            cats_json=opt.cats_json,
             num_chars=len(char_lexicon), device=opt.device,
             eval_device=opt.eval_device, num_words=len(word_lexicon),
             model_type=opt.model_type, state_dim=opt.state_dim,
@@ -240,8 +241,6 @@ def train():
 
     for epoch in range(opt.start_epoch, opt.max_epoch):
 
-        print("CEC EPOCH: {}".format(epoch))
-
         if train_list and epoch >= len(train_list):
             break  # stop if doing the childes marker thing
         elif train_list and epoch < len(train_list):
@@ -252,6 +251,13 @@ def train():
         optimizer = model_use.train_model(epoch, opt, model, optimizer, train)
 
         if ((epoch - opt.eval_start_epoch) % opt.eval_steps == 0 or epoch + 1 == opt.max_epoch) and epoch >= opt.eval_start_epoch:
+
+            print('CEC: left rule MLP weight:')
+            print(model.pcfg.rule_mlp_l.weight)
+
+            print('CEC: right rule MLP weight:')
+            print(model.pcfg.rule_mlp_r.weight)
+            
 
             logging.info('EVALING.')
 

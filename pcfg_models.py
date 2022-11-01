@@ -4,13 +4,14 @@ import torch.nn.functional as F
 from cky_parser_sgd import batch_CKY_parser, SMALL_NEGATIVE_NUMBER
 from treenode import convert_binary_matrix_to_strtree
 from char_coding_models import CharProbRNN, WordProbFCFixVocab, CharProbRNNCategorySpecific, ResidualLayer, WordProbFCFixVocabCompound, CharProbLogistic
-from cg_type import enumerate_structures, generate_labeled_trees
+from cg_type import enumerate_structures, generate_labeled_trees, trees_from_json
 
 
 class SimpleCompPCFGCharNoDistinction(nn.Module):
     def __init__(self,
                  num_primitives=4,
                  max_cat_depth=2,
+                 cats_json=None,
                  state_dim=64,
                  num_chars=100,
                  device='cpu',
@@ -26,6 +27,7 @@ class SimpleCompPCFGCharNoDistinction(nn.Module):
         self.model_type = model_type
         self.num_primitives = num_primitives
         self.max_cat_depth = max_cat_depth
+        self.cats_json = cats_json
         # dummy input matrix for grammar rules
 
         #self.nont_emb = nn.Parameter(torch.randn(self.all_states, state_dim))
@@ -53,6 +55,7 @@ class SimpleCompPCFGCharNoDistinction(nn.Module):
             self.emit_prob_model = CharProbLogistic(char_grams_lexicon, all_words_char_features, num_t=self.all_states)
 
         # CG: "embeddings" for the categories are just one-hot vectors
+        # TODO: for calculating split scores, should real embeddings be used?
         self.nont_emb = nn.Parameter(torch.eye(self.num_cats))
         #self.rule_mlp = nn.Linear(self.num_cats, self.num_cats*2)
         self.rule_mlp_l = nn.Linear(self.num_cats, self.num_cats)
@@ -82,18 +85,21 @@ class SimpleCompPCFGCharNoDistinction(nn.Module):
 
 
     def initialize_weight_matrices(self):
-        max_depth = self.max_cat_depth
-        nt_options = ["-a", "-b"]
-        t_options = list()
-        for i in range(self.num_primitives):
-            t_options.append(str(i))
-        #t_options = ["0", "1", "2", "3"]
-        structs = enumerate_structures(max_depth)
+        if self.cats_json is not None:
+            all_trees = trees_from_json(self.cats_json)
+        else:
+            max_depth = self.max_cat_depth
+            nt_options = ["-a", "-b"]
+            t_options = list()
+            for i in range(self.num_primitives):
+                t_options.append(str(i))
+            #t_options = ["0", "1", "2", "3"]
+            structs = enumerate_structures(max_depth)
 
-        all_trees = list()
-        for s in structs:
-            lts = generate_labeled_trees(s, nt_options, t_options)
-            all_trees.extend(lts)
+            all_trees = list()
+            for s in structs:
+                lts = generate_labeled_trees(s, nt_options, t_options)
+                all_trees.extend(lts)
 
         ix2cat = bidict.bidict()
         for t in all_trees:
@@ -160,6 +166,7 @@ class SimpleCompPCFGCharNoDistinction(nn.Module):
         print("CEC num cats: {}".format(num_cats))
         self.num_cats = num_cats
         self.ix2cat = ix2cat
+        print("CEC ix2cat: {}".format(ix2cat))
         self.l2r = l2r
         self.r2l = r2l
         self.rule_filter_l = can_be_parent_lchild
@@ -236,6 +243,11 @@ class SimpleCompPCFGCharNoDistinction(nn.Module):
             #full_G = full_G + split_scores[:, 0][..., None]
             full_G_l = rule_score_l + split_scores[:, 0][..., None]
             full_G_r = rule_score_r + split_scores[:, 0][..., None]
+
+            print("CEC full_G_l:")
+            print(torch.exp(full_G_l))
+            print("CEC full_G_r:")
+            print(torch.exp(full_G_r))
 
             self.pcfg_parser.set_models(full_p0, full_G_l, full_G_r, self.emission, pcfg_split=split_scores)
 

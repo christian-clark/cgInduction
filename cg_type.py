@@ -1,11 +1,12 @@
-from treelib import Tree #Node also?
-import itertools
+from treelib import Tree, Node
+import itertools, json
 
 
 class CGTree(Tree):
     def __str__(self):
         node_stack = list()
         out = list()
+        if self.root is None: return "<EMPTY>"
         CGTree.build_str(self, self.root, node_stack, out)
         return "".join(out)
 
@@ -150,3 +151,28 @@ def generate_labeled_trees(structure, nt_options, t_options):
         all_labeled_trees.append(labeled_tree)
 
     return all_labeled_trees
+
+
+def trees_from_json(cats_json):
+    all_trees = list()
+    j = json.load(open(cats_json))
+    for jtree in j:
+        tree = CGTree()
+        _recursive_build_tree(tree, jtree)
+        all_trees.append(tree)
+    return all_trees
+
+
+def _recursive_build_tree(tree, jtree, parent=None):
+    new = jtree[0]
+    new_node = Node(new)
+    tree.add_node(new_node, parent=parent)
+    if len(jtree) == 3:
+        lchild = jtree[1]
+        rchild = jtree[2]
+        nid = new_node.identifier
+        _recursive_build_tree(tree, lchild, parent=nid)
+        _recursive_build_tree(tree, rchild, parent=nid)
+    else:
+        assert len(jtree) == 1
+
