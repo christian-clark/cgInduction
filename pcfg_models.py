@@ -54,12 +54,38 @@ class SimpleCompPCFGCharNoDistinction(nn.Module):
         elif self.model_type == 'subgrams':
             self.emit_prob_model = CharProbLogistic(char_grams_lexicon, all_words_char_features, num_t=self.all_states)
 
+
         # CG: "embeddings" for the categories are just one-hot vectors
-        # TODO: for calculating split scores, should real embeddings be used?
-        self.nont_emb = nn.Parameter(torch.eye(self.num_cats))
-        #self.rule_mlp = nn.Linear(self.num_cats, self.num_cats*2)
+        self.fake_emb = nn.Parameter(torch.eye(self.num_cats))
+        # actual embeddings are used to calculate split scores and
+        # probs of left vs right functors
+        self.nt_emb = nn.Parameter(torch.randn(self.num_cats, state_dim))
         self.rule_mlp_l = nn.Linear(self.num_cats, self.num_cats)
         self.rule_mlp_r = nn.Linear(self.num_cats, self.num_cats)
+
+        # CEC debugging; assumes this set of cats:
+        #CEC ix2cat: bidict({0: {{V-aN}-bN}, 1: {V-aN}, 2: {V-aV}, 3: {V-bN}, 4: V, 5: N})
+        # note: weight dims are (out_feats, in_feats)
+        '''
+        self.rule_mlp_l.weight = nn.Parameter(torch.Tensor([
+            [-10000000] + [0] + [-10000000]*5,
+            [-10000000]*7,
+            [-10000000]*7,
+            [-10000000]*7,
+            [-10000000]*7,
+            [-10000000]*7,
+            [-10000000]*7
+        ]))
+        self.rule_mlp_r.weight = nn.Parameter(torch.Tensor([
+            [-10000000]*7,
+            [-10000000]*4 + [0] + [-10000000]*2,
+            [-10000000]*7,
+            [-10000000]*7,
+            [-10000000]*7,
+            [-10000000]*7,
+            [-10000000]*7
+        ]))
+        '''
         # assigns 0 weight to any rule that isn't possible under
         # CG constraints
         #self.rule_mlp.weight = self.rule_mlp_weights
@@ -69,7 +95,15 @@ class SimpleCompPCFGCharNoDistinction(nn.Module):
         # assigns 0 weight to any non-primitive root candidate
         #self.root_mlp.weight = self.root_mlp_weights
 
-        self.split_mlp = nn.Sequential(nn.Linear(self.num_cats, state_dim),
+        # decides terminal or nonterminal
+        self.split_mlp = nn.Sequential(nn.Linear(state_dim, state_dim),
+                                       ResidualLayer(state_dim, state_dim),
+                                       ResidualLayer(state_dim, state_dim),
+                                       nn.Linear(state_dim, 2))
+
+        # decides whether nontermimal branches into left functor + right
+        # argument or right functor + left argument
+        self.dir_mlp = nn.Sequential(nn.Linear(state_dim, state_dim),
                                        ResidualLayer(state_dim, state_dim),
                                        ResidualLayer(state_dim, state_dim),
                                        nn.Linear(state_dim, 2))
@@ -186,63 +220,55 @@ class SimpleCompPCFGCharNoDistinction(nn.Module):
         if set_pcfg:
             self.emission = None
 
-            nt_emb = self.nont_emb
+            fake_emb = self.fake_emb
 
-            #root_scores = F.log_softmax(self.root_mlp(self.root_emb).squeeze(), dim=0)
             root_scores = F.log_softmax(
                 self.root_filter+self.root_mlp(self.root_emb).squeeze(), dim=0
             )
             full_p0 = root_scores
-            #rule_score = F.log_softmax(self.rule_mlp(nt_emb), dim=1)  # nt x t**2
-            #rule_score = F.softmax(self.rule_mlp(nt_emb), dim=1)  # nt x t**2
 
-            # TODO add in rule filter again
-            #rule_score_l = F.log_softmax(
-            #    self.rule_mlp_l(nt_emb), dim=1
-            #)  # nt x t**2
-            #rule_score_l = F.log_softmax(
-            #    self.rule_filter_l+self.rule_mlp_l(nt_emb), dim=1
-            #)  # nt x t**2
+
+            # TODO because rule filter is added in, this isn't really a
+            # probability distribtion for each row. Should there be some kind
+            # of normalization after filtering? may require not filtering NULL
+            # tho, which creates other problems
             rule_score_l = F.log_softmax(
-                self.rule_mlp_l(nt_emb), dim=1
-            ) + self.rule_filter_l  # nt x t**2
+                self.rule_mlp_l(fake_emb), dim=1
+            ) + self.rule_filter_l  # C x C
 
-            # TODO readd this maybe?
-            # set prob of NULL children to 0 after softmax
-            #rule_score_l[:, self.num_cats-1] = -float('inf')
+            print("CEC rule mlp l")
+            print(self.rule_mlp_l(fake_emb))
 
-            #print("CEC rule filter l:")
-            #print(self.rule_filter_l)
-            #print("CEC sum l:")
-            #print(self.rule_filter_l+self.rule_mlp_l(nt_emb))
-            #print("CEC rule score l:")
-            #print(rule_score_l)
+            print("CEC rule filter l")
+            print(self.rule_filter_l)
 
-            # TODO add in rule filter again
-            #rule_score_r = F.log_softmax(
-            #    self.rule_mlp_r(nt_emb), dim=1
-            #)  # nt x t**2
-            #rule_score_r = F.log_softmax(
-            #    self.rule_filter_r+self.rule_mlp_r(nt_emb), dim=1
-            #)  # nt x t**2
+            print("CEC rule score l")
+            print(rule_score_l)
+
             rule_score_r = F.log_softmax(
-                self.rule_mlp_r(nt_emb), dim=1
-            ) + self.rule_filter_r  # nt x t**2
+                self.rule_mlp_r(fake_emb), dim=1
+            ) + self.rule_filter_r  # C x C
 
-            # TODO readd this maybe?
-            #rule_score_r[:, self.num_cats-1] = -float('inf')
+            print("CEC rule mlp r")
+            print(self.rule_mlp_r(fake_emb))
 
-            #print("CEC rule score r:")
-            #print(rule_score_r)
-            #full_G = rule_score
+            print("CEC rule filter r")
+            print(self.rule_filter_r)
+
+            print("CEC rule score r")
+            print(rule_score_r)
+
+            nt_emb = self.nt_emb
             # split_scores[:, 0] gives P(terminal=0 | cat)
             # split_scores[:, 1] gives P(terminal=1 | cat)
-            #split_scores = F.log_softmax(self.split_mlp(nt_emb), dim=1)
             split_scores = F.log_softmax(self.split_mlp(nt_emb), dim=1)
-            split_scores = F.log_softmax(self.split_mlp(nt_emb), dim=1)
-            #full_G = full_G + split_scores[:, 0][..., None]
-            full_G_l = rule_score_l + split_scores[:, 0][..., None]
-            full_G_r = rule_score_r + split_scores[:, 0][..., None]
+            # dir_scores[:, 0] gives P(dir=left | term=0, cat)
+            # dir_scores[:, 1] gives P(dir=right | term=0, cat)
+            dir_scores = F.log_softmax(self.dir_mlp(nt_emb), dim=1)
+            full_G_l = rule_score_l + dir_scores[:, 0][..., None] + \
+                split_scores[:, 0][..., None]
+            full_G_r = rule_score_r + dir_scores[:, 1][..., None] + \
+                split_scores[:, 0][..., None]
 
             print("CEC full_G_l:")
             print(torch.exp(full_G_l))
@@ -251,9 +277,12 @@ class SimpleCompPCFGCharNoDistinction(nn.Module):
 
             self.pcfg_parser.set_models(full_p0, full_G_l, full_G_r, self.emission, pcfg_split=split_scores)
 
-        if self.model_type != 'subgrams':
+
+        if self.model_type == 'word':
+            x = self.emit_prob_model(x, self.nt_emb, set_pcfg=set_pcfg)
+        elif self.model_type != 'subgrams':
             # TODO better to pass in actual embedding instead of one-hot?
-            x = self.emit_prob_model(x, self.nont_emb, set_pcfg=set_pcfg)
+            x = self.emit_prob_model(x, self.fake_emb, set_pcfg=set_pcfg)
         else:
             x = self.emit_prob_model(x)
 
