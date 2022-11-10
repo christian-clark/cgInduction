@@ -115,7 +115,17 @@ class batch_CKY_parser:
             b = self.left_chart[0:height, left_min:left_max] # (all_ijdiffs, i-j, batch, Q) a square of the left chart
             c = torch.flip(self.right_chart[0:height, right_min:right_max], dims=[0])
             #
-            dot_temp_mat = torch.logsumexp(b[...,None]+c[...,None,:], dim=0).view(sent_len-ij_diff, batch_size, self.Q, self.Q)
+            dot_temp_mat = torch.logsumexp(b[...,None]+c[...,None,:], dim=0).view(left_max, batch_size, self.Q, self.Q)
+
+            # add an extra state to the last two dimensions to deal with NULL
+            QUASI_INF = 10000000
+            null_tensor = torch.tensor([-QUASI_INF])
+            null_col_1 = null_tensor.reshape(1, 1, 1, 1).expand(left_max, batch_size, self.Q, 1)
+            dot_temp_mat = torch.cat([dot_temp_mat, null_col_1], dim=3)
+            # dot_temp_mat is now left_max x batch_size x Q x (Q+1)
+            null_col_2 = null_tensor.reshape(1, 1, 1, 1).expand(left_max, batch_size, 1, self.Q+1)
+            dot_temp_mat = torch.cat([dot_temp_mat, null_col_2], dim=2)
+            # dot_temp_mat is now left_max x batch_size x (Q+1) x (Q+1)
 
 
             scores_l = self.log_G_l.to(self.device).repeat(left_max, batch_size, 1, 1)
@@ -136,9 +146,10 @@ class batch_CKY_parser:
             ).to(self.device)
 
             # left_max x batch_size x Q
-            l_functor_prob = torch.gather(dot_temp_mat, dim=3, index=l2r_stacked).squeeze(dim=3)
+            # throw out the last column for NULL
+            l_functor_prob = torch.gather(dot_temp_mat, dim=3, index=l2r_stacked).squeeze(dim=3)[..., :self.Q]
             # left_max x batch_size x Q
-            r_functor_prob = torch.gather(dot_temp_mat, dim=2, index=r2l_stacked).squeeze(dim=2)
+            r_functor_prob = torch.gather(dot_temp_mat, dim=2, index=r2l_stacked).squeeze(dim=2)[..., :self.Q]
 
             # TODO can this be done without creating all the QxQ matrices?
             y_l = scores_l + l_functor_prob[...,None,:]
@@ -262,6 +273,16 @@ class batch_CKY_parser:
             dot_temp_mat = ( b[...,None]+c[...,None,:] ).view(height, left_max, batch_size, self.Q, self.Q)
             # dot temp mat is all_ijdiffs, i-j, batch, Q2
 
+            # add an extra state to the last two dimensions to deal with NULL
+            QUASI_INF = 10000000
+            null_tensor = torch.tensor([-QUASI_INF])
+            null_col_1 = null_tensor.reshape(1, 1, 1, 1, 1).expand(height, left_max, batch_size, self.Q, 1)
+            dot_temp_mat = torch.cat([dot_temp_mat, null_col_1], dim=4)
+            # dot_temp_mat is now height x left_max x batch_size x Q x (Q+1)
+            null_col_2 = null_tensor.reshape(1, 1, 1, 1, 1).expand(height, left_max, batch_size, 1, self.Q+1)
+            dot_temp_mat = torch.cat([dot_temp_mat, null_col_2], dim=3)
+            # dot_temp_mat is now height x left_max x batch_size x (Q+1) x (Q+1)
+
             scores_l = self.log_G_l.to(self.device).repeat(height, left_max, batch_size, 1, 1)
 
             scores_r = self.log_G_r.to(self.device).repeat(height, left_max, batch_size, 1, 1)
@@ -273,10 +294,13 @@ class batch_CKY_parser:
             r2l_stacked = self.r2l.unsqueeze(dim=0).repeat(
                 height, left_max, batch_size, 1, 1
             ).to(self.device)
+
+
             # height x left_max x batch_size x Q
-            l_functor_prob = torch.gather(dot_temp_mat, dim=4, index=l2r_stacked).squeeze(dim=4)
+            # throw out the last column for NULL
+            l_functor_prob = torch.gather(dot_temp_mat, dim=4, index=l2r_stacked).squeeze(dim=4)[..., :self.Q]
             # height x left_max x batch_size x Q
-            r_functor_prob = torch.gather(dot_temp_mat, dim=3, index=r2l_stacked).squeeze(dim=3)
+            r_functor_prob = torch.gather(dot_temp_mat, dim=3, index=r2l_stacked).squeeze(dim=3)[..., :self.Q]
 
             lscores = scores_l + l_functor_prob[...,None,:]
             rscores = scores_r + r_functor_prob[...,None,:]
@@ -372,14 +396,16 @@ class batch_CKY_parser:
             k_b_c = backtrack_chart[ij_diff][ working_node.i, sent_index,
                                                         working_node.cat]
             split_point, b, c = k_b_c[0].item(), k_b_c[1].item(), k_b_c[2].item()
-            if b == self.Q - 1:
-                b_str = "NULL"
-            else:
-                b_str = str(self.ix2cat[b])
-            if c == self.Q - 1:
-                c_str = "NULL"
-            else:
-                c_str = str(self.ix2cat[c])
+#            if b == self.Q - 1:
+#                b_str = "NULL"
+#            else:
+#                b_str = str(self.ix2cat[b])
+#            if c == self.Q - 1:
+#                c_str = "NULL"
+#            else:
+#                c_str = str(self.ix2cat[c])
+            b_str = str(self.ix2cat[b])
+            c_str = str(self.ix2cat[c])
 
             expanded_nodes.append(working_node)
             node_b = Node(b, b_str, working_node.i, split_point, self.D, self.K, parent=working_node)

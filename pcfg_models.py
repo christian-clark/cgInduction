@@ -60,32 +60,21 @@ class SimpleCompPCFGCharNoDistinction(nn.Module):
         # actual embeddings are used to calculate split scores and
         # probs of left vs right functors
         self.nt_emb = nn.Parameter(torch.randn(self.num_cats, state_dim))
-        self.rule_mlp_l = nn.Linear(self.num_cats, self.num_cats)
-        self.rule_mlp_r = nn.Linear(self.num_cats, self.num_cats)
+        #self.rule_mlp_l = nn.Linear(self.num_cats, self.num_cats)
+        #self.rule_mlp_r = nn.Linear(self.num_cats, self.num_cats)
+        # output is C (left functor) + C (right functor) + 1
+        self.rule_mlp = nn.Linear(self.num_cats, 2*self.num_cats+1)
 
-        # CEC debugging; assumes this set of cats:
-        #CEC ix2cat: bidict({0: {{V-aN}-bN}, 1: {V-aN}, 2: {V-aV}, 3: {V-bN}, 4: V, 5: N})
+        # CEC manually seed weights for the 8 cat json
         # note: weight dims are (out_feats, in_feats)
-        '''
-        self.rule_mlp_l.weight = nn.Parameter(torch.Tensor([
-            [-10000000] + [0] + [-10000000]*5,
-            [-10000000]*7,
-            [-10000000]*7,
-            [-10000000]*7,
-            [-10000000]*7,
-            [-10000000]*7,
-            [-10000000]*7
-        ]))
-        self.rule_mlp_r.weight = nn.Parameter(torch.Tensor([
-            [-10000000]*7,
-            [-10000000]*4 + [0] + [-10000000]*2,
-            [-10000000]*7,
-            [-10000000]*7,
-            [-10000000]*7,
-            [-10000000]*7,
-            [-10000000]*7
-        ]))
-        '''
+#        QUASI_INF = 10000000.
+#        fake_weights = torch.full((17, 8), fill_value=-QUASI_INF)
+#        # favor V-aN -> V-aN-bN N
+#        fake_weights[1, 3] = 0.
+#        # favor V -> N V-aN
+#        fake_weights[10, 7] = 0.
+#        self.rule_mlp.weight = nn.Parameter(fake_weights)
+
         # assigns 0 weight to any rule that isn't possible under
         # CG constraints
         #self.rule_mlp.weight = self.rule_mlp_weights
@@ -103,11 +92,11 @@ class SimpleCompPCFGCharNoDistinction(nn.Module):
 
         # decides whether nontermimal branches into left functor + right
         # argument or right functor + left argument
-        self.dir_mlp = nn.Sequential(nn.Linear(state_dim, state_dim),
-                                       ResidualLayer(state_dim, state_dim),
-                                       ResidualLayer(state_dim, state_dim),
-                                       nn.Linear(state_dim, 2))
-
+#        self.dir_mlp = nn.Sequential(nn.Linear(state_dim, state_dim),
+#                                       ResidualLayer(state_dim, state_dim),
+#                                       ResidualLayer(state_dim, state_dim),
+#                                       nn.Linear(state_dim, 2))
+#
         self.device = device
         self.eval_device = eval_device
         #self.pcfg_parser = batch_CKY_parser(nt=self.all_states, t=0, device=self.device)
@@ -140,18 +129,26 @@ class SimpleCompPCFGCharNoDistinction(nn.Module):
             ix2cat[len(ix2cat)] = t
 
         # +1 for a special NULL category at the end of the list
-        num_cats = len(ix2cat) + 1
-        null_cat_ix = num_cats - 1
+        #num_cats = len(ix2cat) + 1
+        num_cats = len(ix2cat)
+        #null_cat_ix = num_cats - 1
 
         #can_be_parent_child = torch.zeros(num_cats, 2, num_cats)
         #can_be_parent_lchild = torch.zeros(num_cats, num_cats)
         #can_be_parent_rchild = torch.zeros(num_cats, num_cats)
         # TODO change to np.inf?
-        can_be_parent_lchild = torch.full((num_cats, num_cats), fill_value=-10000000)
-        can_be_parent_rchild = torch.full((num_cats, num_cats), fill_value=-10000000)
+        QUASI_INF = 10000000
+        #can_be_parent_lchild = torch.full((num_cats, num_cats), fill_value=-QUASI_INF)
+        #can_be_parent_rchild = torch.full((num_cats, num_cats), fill_value=-QUASI_INF)
+        # first num_cats cols: left functor
+        # second num_cats col: right functor
+        # last col: null
+        can_be_parent_child = torch.full((num_cats, 2*num_cats+1), fill_value=-QUASI_INF)
+        pc_null_ix = 2 * num_cats
         # TODO probably don't want these but these make NULL acceptable
         #can_be_parent_lchild[:, null_cat_ix] = 0
         #can_be_parent_rchild[:, null_cat_ix] = 0
+        can_be_parent_child[:, pc_null_ix] = 0
         #parent_child_weights = torch.full(
         #    (num_cats, 2, num_cats), fill_value=-np.inf
         #)
@@ -161,11 +158,12 @@ class SimpleCompPCFGCharNoDistinction(nn.Module):
         # maps category on left (index) to argument taken this category
         # (value at index). If the category on the left cannot take an
         # argument, the value will be num_cats (a dummy category)
-        l2r = torch.empty(num_cats, dtype=torch.int64)
-        l2r[null_cat_ix] = null_cat_ix
+        lr_null_ix = num_cats
+        l2r = torch.empty(num_cats+1, dtype=torch.int64)
+        l2r[lr_null_ix] = lr_null_ix
         # vice versa
-        r2l = torch.empty(num_cats, dtype=torch.int64)
-        r2l[null_cat_ix] = null_cat_ix
+        r2l = torch.empty(num_cats+1, dtype=torch.int64)
+        r2l[lr_null_ix] = lr_null_ix
             
         for cat_ix in ix2cat:
             cat = ix2cat[cat_ix]
@@ -174,8 +172,8 @@ class SimpleCompPCFGCharNoDistinction(nn.Module):
             if len(kittens) == 0:
                 can_be_root[cat_ix] = 0
                 # primitives can't take arguments, so NULL
-                l2r[cat_ix] = null_cat_ix
-                r2l[cat_ix] = null_cat_ix
+                l2r[cat_ix] = lr_null_ix
+                r2l[cat_ix] = lr_null_ix
             else:
                 assert len(kittens) == 2
                 kitten1, kitten2 = kittens
@@ -186,25 +184,33 @@ class SimpleCompPCFGCharNoDistinction(nn.Module):
                 root_tag = cat.get_node(cat.root).tag 
                 if root_tag == "-b":
                     # left child is functor
-                    can_be_parent_lchild[kitten1_ix, cat_ix] = 0
+                    #can_be_parent_lchild[kitten1_ix, cat_ix] = 0
+                    can_be_parent_child[kitten1_ix, cat_ix] = 0
+                    can_be_parent_child[kitten1_ix, pc_null_ix] = -QUASI_INF
+                    
                     l2r[cat_ix] = kitten2_ix
-                    r2l[cat_ix] = null_cat_ix
+                    r2l[cat_ix] = lr_null_ix
                 else:
                     assert root_tag == "-a"
                     # right child is functor
-                    can_be_parent_rchild[kitten1_ix, cat_ix] = 0
+                    #can_be_parent_rchild[kitten1_ix, cat_ix] = 0
+                    can_be_parent_child[kitten1_ix, cat_ix+num_cats] = 0
+                    can_be_parent_child[kitten1_ix, pc_null_ix] = -QUASI_INF
                     r2l[cat_ix] = kitten2_ix
-                    l2r[cat_ix] = null_cat_ix
+                    l2r[cat_ix] = lr_null_ix
 
 
         print("CEC num cats: {}".format(num_cats))
+        # TODO rewrite this for clarity -- NULL is not included in
+        # self.num_cats
         self.num_cats = num_cats
         self.ix2cat = ix2cat
         print("CEC ix2cat: {}".format(ix2cat))
         self.l2r = l2r
         self.r2l = r2l
-        self.rule_filter_l = can_be_parent_lchild
-        self.rule_filter_r = can_be_parent_rchild
+        #self.rule_filter_l = can_be_parent_lchild
+        #self.rule_filter_r = can_be_parent_rchild
+        self.rule_filter = can_be_parent_child
         # TODO does bias matter for either of these?
         #self.rule_weights = nn.Parameter(
         #    parent_child_weights.reshape(num_cats, 2*num_cats).t()
@@ -232,6 +238,7 @@ class SimpleCompPCFGCharNoDistinction(nn.Module):
             # probability distribtion for each row. Should there be some kind
             # of normalization after filtering? may require not filtering NULL
             # tho, which creates other problems
+            '''
             rule_score_l = F.log_softmax(
                 self.rule_mlp_l(fake_emb), dim=1
             ) + self.rule_filter_l  # C x C
@@ -257,23 +264,38 @@ class SimpleCompPCFGCharNoDistinction(nn.Module):
 
             print("CEC rule score r")
             print(rule_score_r)
+            '''
+            rule_scores = F.log_softmax(
+                self.rule_mlp(fake_emb) + self.rule_filter, dim=1
+            ) # C x (2C+1)
+            torch.set_printoptions(precision=3, linewidth=120, sci_mode=False)
+            #print("CEC rule_scores:")
+            #print(torch.exp(rule_scores))
+
+            rule_score_l = rule_scores[:, :self.num_cats]
+            rule_score_r = rule_scores[:, self.num_cats:2*self.num_cats]
+            # last col is for NULL, which is thrown out
 
             nt_emb = self.nt_emb
             # split_scores[:, 0] gives P(terminal=0 | cat)
             # split_scores[:, 1] gives P(terminal=1 | cat)
             split_scores = F.log_softmax(self.split_mlp(nt_emb), dim=1)
+            #print("CEC split scores:")
+            #print(torch.exp(split_scores))
             # dir_scores[:, 0] gives P(dir=left | term=0, cat)
             # dir_scores[:, 1] gives P(dir=right | term=0, cat)
-            dir_scores = F.log_softmax(self.dir_mlp(nt_emb), dim=1)
-            full_G_l = rule_score_l + dir_scores[:, 0][..., None] + \
-                split_scores[:, 0][..., None]
-            full_G_r = rule_score_r + dir_scores[:, 1][..., None] + \
-                split_scores[:, 0][..., None]
+            #dir_scores = F.log_softmax(self.dir_mlp(nt_emb), dim=1)
+            #full_G_l = rule_score_l + dir_scores[:, 0][..., None] + \
+            #    split_scores[:, 0][..., None]
+            #full_G_r = rule_score_r + dir_scores[:, 1][..., None] + \
+            #    split_scores[:, 0][..., None]
+            full_G_l = rule_score_l + split_scores[:, 0][..., None]
+            full_G_r = rule_score_r + split_scores[:, 0][..., None]
 
-            print("CEC full_G_l:")
-            print(torch.exp(full_G_l))
-            print("CEC full_G_r:")
-            print(torch.exp(full_G_r))
+            #print("CEC full_G_l:")
+            #print(torch.exp(full_G_l))
+            #print("CEC full_G_r:")
+            #print(torch.exp(full_G_r))
 
             self.pcfg_parser.set_models(full_p0, full_G_l, full_G_r, self.emission, pcfg_split=split_scores)
 

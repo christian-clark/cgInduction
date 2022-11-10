@@ -252,11 +252,14 @@ def train():
 
         if ((epoch - opt.eval_start_epoch) % opt.eval_steps == 0 or epoch + 1 == opt.max_epoch) and epoch >= opt.eval_start_epoch:
 
-            print('CEC: left rule MLP weight:')
-            print(model.pcfg.rule_mlp_l.weight)
+            #print('CEC: left rule MLP weight:')
+            #print(model.pcfg.rule_mlp_l.weight)
 
-            print('CEC: right rule MLP weight:')
-            print(model.pcfg.rule_mlp_r.weight)
+            #print('CEC: right rule MLP weight:')
+            #print(model.pcfg.rule_mlp_r.weight)
+
+            print('CEC: rule MLP weight:')
+            print(model.pcfg.rule_mlp.weight)
             
 
             logging.info('EVALING.')
