@@ -115,46 +115,60 @@ def eval(gold_pred):
            matching_cross_labeled_consts, all_pred_label_counts
 
 
-PUNC_LABELS = {'PUNC', 'PU', 'PONC', 'PUNCT', "sf", ".", ",", "$.", "$,"}
+def _prune(parented_tree, sub):
+    t = parented_tree
+    parent = sub.parent()
+    while parent and len(parent) == 1:
+        sub = parent
+        parent = sub.parent()
+    try:
+        del t[sub.treeposition()]
+    except:
+        print(t)
+        print(t[sub.treeposition()])
+        raise
+
+
+def delete_trace(original_t):
+    t = deepcopy(original_t)
+
+    t = nltk.ParentedTree.convert(t)
+    subs = t.subtrees(filter=lambda x: x.height() == 2)
+    for sub in subs:
+        # in CHILDES, -NONE-* labels are used for trace and null elements
+        if sub.label().startswith("-NONE-"): 
+            _prune(t, sub)
+
+    t = nltk.Tree.convert(t)
+    t.collapse_unary(collapsePOS=True, collapseRoot=True)
+    return t
+
 
 def delete_punc(original_t, do_nothing=0, punc_indices=None):
+    PUNC_LABELS = {'PUNC', 'PU', 'PONC', 'PUNCT', "sf", ".", ",", "$.", "$,"}
     # assert (return_punc_indices and not punc_indices) or (not return_punc_indices and punc_indices is not None)
     t = deepcopy(original_t)
+    indices = []
     if not do_nothing:
-        if punc_indices is not None:
-            return_punc_indices = False
-        else:
+        if punc_indices is None:
             return_punc_indices = True
+        else:
+            return_punc_indices = False
 
         t = nltk.ParentedTree.convert(t)
-        indices = []
         indexed_subs = list(enumerate(t.subtrees(filter=lambda x: x.height() == 2)))
         for sub_index, sub in indexed_subs:
             # print(sub_index, sub)
-
-            if sub.label() in PUNC_LABELS or 'PUNC' in sub.label() or (return_punc_indices is False and sub_index in punc_indices):  #
-                parent = sub.parent()
-                # print(sub_index, sub)
-                while parent and len(parent) == 1:
-                    sub = parent
-                    parent = sub.parent()
-                try:
-                    del t[sub.treeposition()]
-                except:
-                    print(t)
-                    print(t[sub.treeposition()])
-                    raise
+            if sub.label() in PUNC_LABELS \
+                or 'PUNC' in sub.label() \
+                or (not return_punc_indices and sub_index in punc_indices):
+                _prune(t, sub)
                 if return_punc_indices:
                     indices.append(sub_index)
 
-        t = nltk.Tree.convert(t)
-        t.collapse_unary(collapsePOS=True, collapseRoot=True)
-        if return_punc_indices:
-            return t, indices
-        return t, []
-    else:
-        t.collapse_unary(collapsePOS=True, collapseRoot=True)
-    return t, []
+    t = nltk.Tree.convert(t)
+    t.collapse_unary(collapsePOS=True, collapseRoot=True)
+    return t, indices 
 
 #
 # def delete_punc(t):
@@ -238,6 +252,9 @@ def eval_rvm_et_al(args):
             logging.info('>>>>> WITHOUT PUNC <<<<<')
         else:
             logging.info('>>>>> WITH PUNC <<<<<')
+
+        with ctx.Pool(PROCESS_NUM) as pool:
+            gold_trees = pool.starmap(delete_trace, zip(gold_trees))
 
         with ctx.Pool(PROCESS_NUM) as pool:
             # logging.info('step 1')
