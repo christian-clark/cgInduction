@@ -129,15 +129,44 @@ def _prune(parented_tree, sub):
         raise
 
 
-def delete_trace(original_t):
-    t = deepcopy(original_t)
+def delete_trace(tree):
+    t = deepcopy(tree)
 
     t = nltk.ParentedTree.convert(t)
-    subs = t.subtrees(filter=lambda x: x.height() == 2)
-    for sub in subs:
-        # in CHILDES, -NONE-* labels are used for trace and null elements
-        if sub.label().startswith("-NONE-"): 
+    done = False
+
+    # The while loop here is necessary in case removing one bad element
+    # changes the position of another bad element in the tree
+    # Might be worth copying this idea over to delete_punc()
+    while not done:
+        subs = t.subtrees(filter=lambda x: x.height() == 2)
+        bad_found = False
+        for sub in subs:
+            # in CHILDES, -NONE-* labels are used for trace and null elements
+            if sub.label().startswith("-NONE-"): 
+                bad_found = True
+                break
+            # the adam partition of CHILDES has a couple WP *NULL*,
+            # WRB *NULL*, and AUX *NULL* subtrees
+            elif sub.label() in {"WP", "WRB", "AUX"} and sub.leaves()[0] == "*NULL*":
+                assert len(sub.leaves()) == 1
+                bad_found = True
+                break
+
+        if bad_found:
             _prune(t, sub)
+        else:
+            done = True
+
+#    subs = t.subtrees(filter=lambda x: x.height() == 2)
+#    for sub in subs:
+#        # in CHILDES, -NONE-* labels are used for trace and null elements
+#        if sub.label().startswith("-NONE-"): 
+#            _prune(t, sub)
+#        # the adam partition of CHILDES has a couple WP *NULL* subtrees
+#        elif sub.label() == "WP" and sub.leaves()[0] == "*NULL*":
+#            assert len(sub.leaves()) == 1
+#            _prune(t, sub)
 
     t = nltk.Tree.convert(t)
     t.collapse_unary(collapsePOS=True, collapseRoot=True)
@@ -154,7 +183,6 @@ def delete_punc(original_t, do_nothing=0, punc_indices=None):
             return_punc_indices = True
         else:
             return_punc_indices = False
-
         t = nltk.ParentedTree.convert(t)
         indexed_subs = list(enumerate(t.subtrees(filter=lambda x: x.height() == 2)))
         for sub_index, sub in indexed_subs:
@@ -165,8 +193,8 @@ def delete_punc(original_t, do_nothing=0, punc_indices=None):
                 _prune(t, sub)
                 if return_punc_indices:
                     indices.append(sub_index)
+        t = nltk.Tree.convert(t)
 
-    t = nltk.Tree.convert(t)
     t.collapse_unary(collapsePOS=True, collapseRoot=True)
     return t, indices 
 
