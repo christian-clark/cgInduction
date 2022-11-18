@@ -5,9 +5,10 @@ from treenode import convert_binary_matrix_to_strtree
 
 
 class TopModel(nn.Module):
-    def __init__(self, inducer):
+    def __init__(self, inducer, writer:SummaryWriter=None):
         super(TopModel, self).__init__()
         self.inducer = inducer
+        self.writer = writer
 
 
     def forward(self, word_inp, chars_var_inp, distance_penalty_weight=0.):

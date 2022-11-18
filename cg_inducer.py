@@ -44,6 +44,7 @@ class BasicCGInducer(nn.Module):
         else:
             raise ValueError("Model type should be char or word")
 
+        self.init_cats_and_masks()
         # CG: "embeddings" for the categories are just one-hot vectors
         self.fake_emb = nn.Parameter(torch.eye(self.num_cats))
         # actual embeddings are used to calculate split scores and
@@ -86,8 +87,6 @@ class BasicCGInducer(nn.Module):
             t=0,
             device=self.device
         )
-
-            self.init_cats_and_masks()
 
 
     def init_cats_and_masks(self):

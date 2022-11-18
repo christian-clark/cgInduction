@@ -206,7 +206,7 @@ def train():
             rnn_hidden_dim=opt.rnn_hidden_dim
         )
 
-    model = TopModel(parser)
+    model = TopModel(parser, writer)
 
     logging.info(str(model))
     num_grammar_params = 0
