@@ -14,7 +14,7 @@ def logsumexp_multiply(a, b):
 
 
 # for dense grammar only! ie D must be -1
-class batch_CKY_parser:
+class BatchCKYParser:
     def __init__(
         self, ix2cat, l2r, r2l,
         nt=0, t=0, device='cpu'

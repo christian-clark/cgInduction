@@ -14,12 +14,13 @@ from torch.utils.tensorboard import SummaryWriter
 from torch.autograd import Variable
 from collections import Counter
 import numpy as np
-from top_models import *
+from top_models import TopModel
 import preprocess
 import postprocess, model_use
 import model_args
 from eval.eval_access import eval_access
-from pcfg_models import SimpleCompPCFGCharNoDistinction
+from cg_inducer import BasicCGInducer
+
 
 def random_seed(seed_value, use_cuda):
     np.random.seed(seed_value) # cpu vars
@@ -28,6 +29,7 @@ def random_seed(seed_value, use_cuda):
     if use_cuda and torch.cuda.is_available():
         torch.cuda.manual_seed(seed_value)
         torch.cuda.manual_seed_all(seed_value) # gpu vars
+
 
 def train():
     torch.autograd.set_detect_anomaly(True)
@@ -193,7 +195,7 @@ def train():
     if opt.model_type not in {"word", "char"}:
         raise ValueError('not recognized model type! {} '.format(opt.model_type))
     else:
-        pcfg_parser = SimpleCompPCFGCharNoDistinction(
+        parser = BasicCGInducer(
             num_primitives=opt.num_primitives, max_cat_depth=opt.max_cat_depth,
             cats_json=opt.cats_json,
             num_chars=len(char_lexicon), device=opt.device,
@@ -204,7 +206,7 @@ def train():
             rnn_hidden_dim=opt.rnn_hidden_dim
         )
 
-    model = CharPCFG(pcfg_parser, writer=writer)
+    model = TopModel(parser)
 
     logging.info(str(model))
     num_grammar_params = 0
@@ -252,15 +254,8 @@ def train():
 
         if ((epoch - opt.eval_start_epoch) % opt.eval_steps == 0 or epoch + 1 == opt.max_epoch) and epoch >= opt.eval_start_epoch:
 
-            #print('CEC: left rule MLP weight:')
-            #print(model.pcfg.rule_mlp_l.weight)
-
-            #print('CEC: right rule MLP weight:')
-            #print(model.pcfg.rule_mlp_r.weight)
-
             print('CEC: rule MLP weight:')
-            print(model.pcfg.rule_mlp.weight)
-            
+            print(model.grammar.rule_mlp.weight)
 
             logging.info('EVALING.')
 
@@ -294,9 +289,8 @@ def train():
 
     model.writer.close()
 
+
 def test():
-
-
     opt = model_args.parse_args(sys.argv)
 
     # set seed before anything else.
@@ -438,7 +432,7 @@ def test():
     if opt.model_type not in {"word", "char"}:
         raise ValueError('not recognized model type! {} '.format(opt.model_type))
     else:
-        pcfg_parser = SimpleCompPCFGCharNoDistinction(
+        parser = BasicCGInducer(
             num_primitives=opt.num_primitives, max_cat_depth=opt.max_cat_depth,
             num_chars=len(char_lexicon), device=opt.device,
             eval_device=opt.eval_device, num_words=len(word_lexicon),
@@ -448,7 +442,7 @@ def test():
             rnn_hidden_dim=opt.rnn_hidden_dim
         )
 
-    model = CharPCFG(pcfg_parser, writer=writer)
+    model = TopModel(parser, writer=writer)
 
     logging.info(str(model))
     num_grammar_params = 0
@@ -495,6 +489,7 @@ def test():
             model.to(opt.device)
 
     model.writer.close()
+
 
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == 'train':
