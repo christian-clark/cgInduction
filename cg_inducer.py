@@ -1,4 +1,4 @@
-import torch, bidict, numpy as np, torch.nn.functional as F
+import torch, bidict, random, numpy as np, torch.nn.functional as F
 from torch import nn
 from cky_parser_sgd import BatchCKYParser
 from char_coding_models import CharProbRNN, ResidualLayer, \
@@ -30,6 +30,8 @@ class BasicCGInducer(nn.Module):
         self.num_primitives = num_primitives
         self.max_cat_depth = max_cat_depth
         self.cats_json = cats_json
+        self.device = device
+        self.eval_device = eval_device
 
         if self.model_type == 'char':
             self.emit_prob_model = CharProbRNN(
@@ -66,8 +68,8 @@ class BasicCGInducer(nn.Module):
 #        fake_weights[10, 7] = 0.
 #        self.rule_mlp.weight = nn.Parameter(fake_weights)
 
-        self.root_emb = nn.Parameter(torch.eye(1))
-        self.root_mlp = nn.Linear(1, self.num_cats)
+        self.root_emb = nn.Parameter(torch.eye(1)).to(self.device)
+        self.root_mlp = nn.Linear(1, self.num_cats).to(self.device)
 
         # decides terminal or nonterminal
         self.split_mlp = nn.Sequential(
@@ -75,10 +77,8 @@ class BasicCGInducer(nn.Module):
             ResidualLayer(state_dim, state_dim),
             ResidualLayer(state_dim, state_dim),
             nn.Linear(state_dim, 2)
-        )
+        ).to(self.device)
 
-        self.device = device
-        self.eval_device = eval_device
         self.parser = BatchCKYParser(
             self.ix2cat,
             self.l2r,
@@ -172,11 +172,11 @@ class BasicCGInducer(nn.Module):
         print("CEC num cats: {}".format(num_cats))
         self.num_cats = num_cats
         self.ix2cat = ix2cat
-        print("CEC ix2cat: {}".format(ix2cat))
+        print("CEC ix2cat sample: {}".format(random.sample(ix2cat.values(), 100)))
         self.l2r = l2r
         self.r2l = r2l
-        self.rule_mask = rule_mask
-        self.root_mask = can_be_root
+        self.rule_mask = rule_mask.to(self.device)
+        self.root_mask = can_be_root.to(self.device)
 
 
     def forward(self, x, eval=False, argmax=False, use_mean=False, indices=None, set_grammar=True, return_ll=True, **kwargs):

@@ -119,7 +119,7 @@ class BatchCKYParser:
 
             # add an extra state to the last two dimensions to deal with NULL
             QUASI_INF = 10000000
-            null_tensor = torch.tensor([-QUASI_INF])
+            null_tensor = torch.tensor([-QUASI_INF]).to(self.device)
             null_col_1 = null_tensor.reshape(1, 1, 1, 1).expand(left_max, batch_size, self.Q, 1)
             dot_temp_mat = torch.cat([dot_temp_mat, null_col_1], dim=3)
             # dot_temp_mat is now left_max x batch_size x Q x (Q+1)
@@ -275,7 +275,7 @@ class BatchCKYParser:
 
             # add an extra state to the last two dimensions to deal with NULL
             QUASI_INF = 10000000
-            null_tensor = torch.tensor([-QUASI_INF])
+            null_tensor = torch.tensor([-QUASI_INF]).to(self.device)
             null_col_1 = null_tensor.reshape(1, 1, 1, 1, 1).expand(height, left_max, batch_size, self.Q, 1)
             dot_temp_mat = torch.cat([dot_temp_mat, null_col_1], dim=4)
             # dot_temp_mat is now height x left_max x batch_size x Q x (Q+1)

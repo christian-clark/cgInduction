@@ -253,12 +253,7 @@ def train():
         optimizer = model_use.train_model(epoch, opt, model, optimizer, train)
 
         if ((epoch - opt.eval_start_epoch) % opt.eval_steps == 0 or epoch + 1 == opt.max_epoch) and epoch >= opt.eval_start_epoch:
-
-            print('CEC: rule MLP weight:')
-            print(model.grammar.rule_mlp.weight)
-
             logging.info('EVALING.')
-
             if opt.eval_parsing:
                 # evaluate on CPU
                 model.to(opt.eval_device)

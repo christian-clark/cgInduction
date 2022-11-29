@@ -94,9 +94,9 @@ def parse_dataset(model, dataset, epoch, section='dev'):
         for batch_index, (w, c, var_c, lens, masks, indices) in enumerate(zip(train_w, train_c, train_var_c, train_lens,
                                                                               train_masks, train_indices)):
             if batch_index == 0:
-                structure_loss, v_treelist = model.parse(w, var_c, indices, set_pcfg=True)
+                structure_loss, v_treelist = model.parse(w, var_c, indices, set_grammar=True)
             else:
-                structure_loss, v_treelist = model.parse(w, var_c, indices, set_pcfg=False)
+                structure_loss, v_treelist = model.parse(w, var_c, indices, set_grammar=False)
 
             for t_id, t in zip(indices, v_treelist):
                 trees[t_id] = t
@@ -118,9 +118,9 @@ def likelihood_dataset(model, dataset, epoch, section='dev'):
         for batch_index, (w, c, var_c, lens, masks, indices) in enumerate(zip(train_w, train_c, train_var_c, train_lens,
                                                                               train_masks, train_indices)):
             if batch_index == 0:
-                structure_loss = model.likelihood(w, var_c, indices, set_pcfg=True)
+                structure_loss = model.likelihood(w, var_c, indices, set_grammar=True)
             else:
-                structure_loss = model.likelihood(w, var_c, indices, set_pcfg=False)
+                structure_loss = model.likelihood(w, var_c, indices, set_grammar=False)
 
             total_structure_loss += structure_loss
 
