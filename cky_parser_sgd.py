@@ -2,6 +2,7 @@
 import torch, logging, datetime
 from treenode import Node, nodes_to_tree
 import torch.nn.functional as F
+import numpy as np
 
 # from .cky_parser_lcg_sparse import sparse_vit_add_trick
 
@@ -16,19 +17,20 @@ def logsumexp_multiply(a, b):
 # for dense grammar only! ie D must be -1
 class BatchCKYParser:
     def __init__(
-        self, ix2cat, l2r, r2l,
-        nt=0, t=0, device='cpu'
+        self, ix2cat, l_functors, r_functors, q, q_nf, device="cpu"
     ):
         self.D = -1
-        self.K = nt
+        # TODO is this correct?
+        self.K = q_nf
         self.lexis = None # Preterminal expansion part of the grammar (this will be dense)
         self.G = None     # Nonterminal expansion part of the grammar (usually be a sparse matrix representation)
         self.p0 = None
         # self.viterbi_chart = np.zeros_like(self.chart, dtype=np.float32)
         self.ix2cat = ix2cat
-        self.l2r = l2r
-        self.r2l = r2l
-        self.Q = nt + t
+        self.l_functors = l_functors
+        self.r_functors = r_functors
+        self.Q = q
+        self.Q_nf = q_nf
         self.this_sent_len = -1
         self.counter = 0
         self.vocab_prob_list = []
@@ -38,10 +40,12 @@ class BatchCKYParser:
         else:
             self.device = 'cpu'
 
-    def set_models(self, p0, expansion_l, expansion_r, emission, pcfg_split=None):
-        #self.log_G = expansion
-        self.log_G_l = expansion_l
-        self.log_G_r = expansion_r
+    # TODO rename pcfg_split
+    def set_models(
+            self, p0, expansion_larg, expansion_rarg, emission, pcfg_split=None
+        ):
+        self.log_G_larg = expansion_larg
+        self.log_G_rarg = expansion_rarg
         self.log_p0 = p0
         self.log_lexis = emission
         self.pcfg_split = pcfg_split
@@ -114,50 +118,65 @@ class BatchCKYParser:
 
             b = self.left_chart[0:height, left_min:left_max] # (all_ijdiffs, i-j, batch, Q) a square of the left chart
             c = torch.flip(self.right_chart[0:height, right_min:right_max], dims=[0])
-            #
-            dot_temp_mat = torch.logsumexp(b[...,None]+c[...,None,:], dim=0).view(left_max, batch_size, self.Q, self.Q)
+            # TODO this can be optimized by taking advantage of the fact that
+            # maximally deep categories can only appear on preterminal nodes
+            dot_temp_mat = torch.logsumexp(b[...,None]+c[...,None,:], dim=0)
+            # dim: left_max x batch_size x Q x Q
+            # TODO does this actually do anything? isn't it already in this shape after the previous step?
+            dot_temp_mat = dot_temp_mat.view(
+                left_max, batch_size, self.Q, self.Q
+            )
 
-            # add an extra state to the last two dimensions to deal with NULL
-            QUASI_INF = 10000000
-            null_tensor = torch.tensor([-QUASI_INF]).to(self.device)
-            null_col_1 = null_tensor.reshape(1, 1, 1, 1).expand(left_max, batch_size, self.Q, 1)
-            dot_temp_mat = torch.cat([dot_temp_mat, null_col_1], dim=3)
-            # dot_temp_mat is now left_max x batch_size x Q x (Q+1)
-            null_col_2 = null_tensor.reshape(1, 1, 1, 1).expand(left_max, batch_size, 1, self.Q+1)
-            dot_temp_mat = torch.cat([dot_temp_mat, null_col_2], dim=2)
-            # dot_temp_mat is now left_max x batch_size x (Q+1) x (Q+1)
+            # dim: left_max x batch_size x Q_nf x Q_nf
+            scores_larg = self.log_G_larg.to(self.device).repeat(left_max, batch_size, 1, 1)
+            scores_rarg = self.log_G_rarg.to(self.device).repeat(left_max, batch_size, 1, 1)
 
+            # dim: left_max x batch_size x Q_nf x Q_nf
+            rfunc_ixs = self.r_functors.repeat(left_max, batch_size, 1, 1)
+            lfunc_ixs = self.l_functors.repeat(left_max, batch_size, 1, 1)
 
-            scores_l = self.log_G_l.to(self.device).repeat(left_max, batch_size, 1, 1)
-            # left_max x batch_size x Q x Q
+            # dim: left_max x batch_size x Q_nf x Q_nf
+            # dim 2 corresponds to left-child arg categories
+            # dim 3 corresponds to parent categories
+            dot_temp_mat_larg = torch.gather(
+                dot_temp_mat[..., :self.Q_nf, :], dim=3, index=rfunc_ixs
+            )
 
-            #scores_r = F.log_softmax(self.log_G_r*self.rule_filter_r, dim=1) # Q x Q
-            scores_r = self.log_G_r.to(self.device).repeat(left_max, batch_size, 1, 1)
+            # dim: left_max x batch_size x Q_nf x Q_nf
+            # dim 2 corresponds to right-child arg categories
+            # dim 3 corresponds to parent categories
+            dot_temp_mat_rarg = torch.gather(
+                dot_temp_mat[..., :self.Q_nf], dim=2, index=lfunc_ixs
+            )
 
-            # left_max x batch_size x Q x Q
+            # TODO can this be done more space-efficiently?
+            # dim: left_max x batch_size x Q_nf x Q_nf
+            y_larg = scores_larg + dot_temp_mat_larg
+            y_rarg = scores_rarg + dot_temp_mat_rarg
+            # combine left and right arg probabilities
+            # dim: left_max x batch_size x Q_nf x Q_nf
+            y1 = torch.logsumexp(torch.stack([y_larg, y_rarg]), dim=0)
+            # marginalize over arg categories
+            # dim: left_max x batch_size x Q_nf
+            y1 = torch.logsumexp(y1, dim=2)
 
-            l2r_stacked = self.l2r.unsqueeze(dim=1).repeat(
-                left_max, batch_size, 1, 1
-            ).to(self.device)
-            # left_max x batch_size x Q
+            # before this, y1 just contains probabilities for the Q_nf non-
+            # functor categories, since these are the only ones that can be
+            # parents. But left_chart and right_chart maintain all Q
+            # categories, so pad y1 to get it up to that size
 
-            r2l_stacked = self.r2l.unsqueeze(dim=0).repeat(
-                left_max, batch_size, 1, 1
-            ).to(self.device)
+            # TODO an alternative to padding here might be to initialize
+            # left_chart and right_chart to all -inf
+            QUASI_INF = 10000000.
+            padding = torch.full(
+                (left_max, batch_size, self.Q-self.Q_nf),
+                fill_value=-QUASI_INF
+            )
+            padding = padding.to(self.device)
 
-            # left_max x batch_size x Q
-            # throw out the last column for NULL
-            l_functor_prob = torch.gather(dot_temp_mat, dim=3, index=l2r_stacked).squeeze(dim=3)[..., :self.Q]
-            # left_max x batch_size x Q
-            r_functor_prob = torch.gather(dot_temp_mat, dim=2, index=r2l_stacked).squeeze(dim=2)[..., :self.Q]
+            # dim: left_max x batch_size x Q
+            y1 = torch.concat([y1, padding], dim=2)
 
-            # TODO can this be done without creating all the QxQ matrices?
-            y_l = scores_l + l_functor_prob[...,None,:]
-            y_r = scores_r + r_functor_prob[...,None,:]
-            y1 = torch.logsumexp(torch.stack([y_l, y_r]), dim=0)
-            #y1 = y_l
-            # left_max x batch_size x Q x Q
-            y1 = torch.logsumexp(y1, dim=3)
 
             self.left_chart[height, left_min:left_max] = y1
             self.right_chart[height, right_min:right_max] = y1
@@ -269,85 +288,127 @@ class BatchCKYParser:
             b = self.left_chart[0:height, left_min:left_max] # (all_ijdiffs, i-j, batch, Q) a square of the left chart
             c = torch.flip(self.right_chart[0:height, right_min:right_max], dims=[0])
             #
-            #dot_temp_mat = ( b[...,None]+c[...,None,:] ).view(height, left_max, batch_size, -1)
+            # dim: height x left_max x batch_size x Q x Q
             dot_temp_mat = ( b[...,None]+c[...,None,:] ).view(height, left_max, batch_size, self.Q, self.Q)
-            # dot temp mat is all_ijdiffs, i-j, batch, Q2
 
-            # add an extra state to the last two dimensions to deal with NULL
-            QUASI_INF = 10000000
-            null_tensor = torch.tensor([-QUASI_INF]).to(self.device)
-            null_col_1 = null_tensor.reshape(1, 1, 1, 1, 1).expand(height, left_max, batch_size, self.Q, 1)
-            dot_temp_mat = torch.cat([dot_temp_mat, null_col_1], dim=4)
-            # dot_temp_mat is now height x left_max x batch_size x Q x (Q+1)
-            null_col_2 = null_tensor.reshape(1, 1, 1, 1, 1).expand(height, left_max, batch_size, 1, self.Q+1)
-            dot_temp_mat = torch.cat([dot_temp_mat, null_col_2], dim=3)
-            # dot_temp_mat is now height x left_max x batch_size x (Q+1) x (Q+1)
 
-            scores_l = self.log_G_l.to(self.device).repeat(height, left_max, batch_size, 1, 1)
-
-            scores_r = self.log_G_r.to(self.device).repeat(height, left_max, batch_size, 1, 1)
-
-            l2r_stacked = self.l2r.unsqueeze(dim=1).repeat(
+            # dim: height x left_max x batch_size x Q_nf x Q_nf
+            scores_larg = self.log_G_larg.to(self.device).repeat(
                 height, left_max, batch_size, 1, 1
-            ).to(self.device)
-
-            r2l_stacked = self.r2l.unsqueeze(dim=0).repeat(
+            )
+            scores_rarg = self.log_G_rarg.to(self.device).repeat(
                 height, left_max, batch_size, 1, 1
-            ).to(self.device)
-
-
-            # height x left_max x batch_size x Q
-            # throw out the last column for NULL
-            l_functor_prob = torch.gather(dot_temp_mat, dim=4, index=l2r_stacked).squeeze(dim=4)[..., :self.Q]
-            # height x left_max x batch_size x Q
-            r_functor_prob = torch.gather(dot_temp_mat, dim=3, index=r2l_stacked).squeeze(dim=3)[..., :self.Q]
-
-            lscores = scores_l + l_functor_prob[...,None,:]
-            rscores = scores_r + r_functor_prob[...,None,:]
-
-            # permute the dims to get i-j, batch, Q, height Q
-            lscores = lscores.permute(1,2,3,0,4).contiguous().view(
-                left_max, batch_size, self.Q, -1
             )
 
-            rscores = rscores.permute(1,2,3,0,4).contiguous().view(
-                left_max, batch_size, self.Q, -1
+            # TODO rename variables to make this clearer
+            # dim: height x left_max x batch_size x Q_nf x Q_nf
+            rfunc_ixs = self.r_functors.repeat(
+                height, left_max, batch_size, 1, 1
             )
-            lmax_kbc, largmax_kbc = torch.max(lscores, dim=3)
-            rmax_kbc, rargmax_kbc = torch.max(rscores, dim=3)
-            # i-j, batch, Q
+            lfunc_ixs = self.l_functors.repeat(
+                height, left_max, batch_size, 1, 1
+            )
 
+            # dim: height x left_max x batch_size x Q_nf x Q_nf
+            dot_temp_mat_larg = torch.gather(
+                dot_temp_mat[..., :self.Q_nf, :], dim=4, index=rfunc_ixs
+            )
+            dot_temp_mat_rarg = torch.gather(
+                dot_temp_mat[..., :self.Q_nf], dim=3, index=lfunc_ixs
+            )
 
-            l_ks = largmax_kbc // (self.Q) + torch.arange(1, left_max+1)[:, None, None]. to(self.device)
-            l_bs = largmax_kbc % self.Q
-            l2r_repeat = self.l2r.repeat(
-                left_max, batch_size, 1
-            ).to(self.device)
-            l_cs = torch.gather(l2r_repeat, index=l_bs, dim=2)
+            # dim: height x left_max x batch_size x Q_nf x Q_nf
+            combined_scores_larg = scores_larg + dot_temp_mat_larg
+            combined_scores_rarg = scores_larg + dot_temp_mat_larg
+
+            combined_scores_larg = combined_scores_larg.permute(1,2,3,0,4)
+            # dim: left_max x batch_size x Q_nf x height*Q_nf
+            combined_scores_larg = combined_scores_larg.contiguous().view(
+                left_max, batch_size, self.Q_nf, -1
+            )
+            combined_scores_rarg = combined_scores_rarg.permute(1,2,3,0,4)
+            # dim: left_max x batch_size x Q_nf x height*Q_nf
+            combined_scores_rarg = combined_scores_rarg.contiguous().view(
+                left_max, batch_size, self.Q_nf, -1
+            )
+
+            # dim: left_max x batch_size x Q_nf
+            lmax_kbc, largmax_kbc = torch.max(combined_scores_larg, dim=3)
+            rmax_kbc, rargmax_kbc = torch.max(combined_scores_rarg, dim=3)
+
+            # dim: left_max x batch_size x Q_nf
+            l_ks = largmax_kbc // (self.Q_nf) + torch.arange(1, left_max+1)[:, None, None]. to(self.device)
+            # dim: left_max x batch_size x Q_nf
+            l_bs = largmax_kbc % self.Q_nf
+
+            # dim: left_max x batch_size x 1 x Q_nf
+            l_bs_reshape = l_bs.view(left_max, batch_size, 1, self.Q_nf)
+
+            # dim: left_max x batch_size x Q_nf x Q_nf
+            rfunc_ixs = self.r_functors.repeat(
+                left_max, batch_size, 1, 1
+            )
+
+            # dim: left_max x batch_size x Q_nf
+            l_cs = torch.gather(rfunc_ixs, index=l_bs_reshape, dim=2).squeeze(dim=2)
+
+            # dim: 3 x left_max x batch_size x Q_nf
             l_kbc = torch.stack([l_ks, l_bs, l_cs], dim=0)
 
-            r_ks = rargmax_kbc // (self.Q) + torch.arange(1, left_max+1)[:, None, None]. to(self.device)
-            # c is right child, functor in this case
-            r_cs = rargmax_kbc % self.Q
-            r2l_repeat = self.r2l.repeat(
-                left_max, batch_size, 1
-            ).to(self.device)
-            r_bs = torch.gather(r2l_repeat, index=r_cs, dim=2)
+####
+            # dim: left_max x batch_size x Q_nf
+            r_ks = largmax_kbc // (self.Q_nf) + torch.arange(1, left_max+1)[:, None, None]. to(self.device)
+            # dim: left_max x batch_size x Q_nf
+            r_cs = rargmax_kbc % self.Q_nf
+
+            # dim: left_max x batch_size x 1 x Q_nf
+            r_cs_reshape = r_cs.view(left_max, batch_size, 1, self.Q_nf)
+
+            # dim: left_max x batch_size x Q_nf x Q_nf
+            lfunc_ixs = self.l_functors.repeat(
+                left_max, batch_size, 1, 1
+            )
+
+            # dim: left_max x batch_size x Q_nf
+            r_bs = torch.gather(lfunc_ixs, index=r_cs_reshape, dim=2).squeeze(dim=2)
+
+            # dim: 3 x left_max x batch_size x Q_nf
             r_kbc = torch.stack([r_ks, r_bs, r_cs], dim=0)
+
+            # dim: 2 x 3 x left_max x batch_size x Q_nf
             lr_kbc = torch.stack([l_kbc, r_kbc], dim=0)
 
 
+            # dim: 2 x left_max x batch_size x Q_nf
             lr_max = torch.stack([lmax_kbc, rmax_kbc], dim=0)
+            # tells whether left arg or right arg is more likely
+            # each value is 0 (left) or 1 (right)
+            # dim: left_max x batch_size x Q_nf
             combined_max, combined_argmax = torch.max(lr_max, dim=0)
+
+            # TODO an alternative to padding here might be to initialize
+            # left_chart and right_chart to all -inf
+            QUASI_INF = 10000000.
+            padding = torch.full(
+                (left_max, batch_size, self.Q-self.Q_nf),
+                fill_value=-QUASI_INF
+            )
+            padding = padding.to(self.device)
+
+            # dim: left_max x batch_size x Q
+            combined_max = torch.concat([combined_max, padding], dim=2)
 
             self.left_chart[height, left_min:left_max] = combined_max
             self.right_chart[height, right_min:right_max] = combined_max
 
             # repeat to gather the same k, b, and c
+            # dim: 1 x 3 x left_max x batch_size x Q_nf
             combined_argmax = combined_argmax.repeat(3, 1, 1, 1).unsqueeze(dim=0)
             # TODO use different arrangement of dimensions initally to
             # avoid need for permute
+            # dim: 3 x left_max x batch_size x Q_nf
             best_kbc = torch.gather(lr_kbc, index=combined_argmax, dim=0).squeeze(dim=0)
+            # dim: left_max x batch_size x Q_nf x 3
             best_kbc = best_kbc.permute(1, 2, 3, 0)
 
             backtrack_chart[ij_diff] = best_kbc

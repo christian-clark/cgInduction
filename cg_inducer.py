@@ -3,8 +3,7 @@ from torch import nn
 from cky_parser_sgd import BatchCKYParser
 from char_coding_models import CharProbRNN, ResidualLayer, \
     WordProbFCFixVocabCompound
-from cg_type import enumerate_structures, generate_labeled_trees, \
-    trees_from_json
+from cg_type import CGNode, generate_categories, trees_from_json
 
 
 class BasicCGInducer(nn.Module):
@@ -48,15 +47,14 @@ class BasicCGInducer(nn.Module):
 
         self.init_cats_and_masks()
         # CG: "embeddings" for the categories are just one-hot vectors
-        self.fake_emb = nn.Parameter(torch.eye(self.num_cats))
-        # actual embeddings are used to calculate split scores and
-        # probs of left vs right functors
+        # these are used for parent categories, which can only be non-
+        # functor (nf) categories
+        self.fake_emb = nn.Parameter(torch.eye(self.num_nf_cats))
+        # actual embeddings are used to calculate split scores
+        # (i.e. prob of terminal vs nonterminal)
         self.nt_emb = nn.Parameter(torch.randn(self.num_cats, state_dim))
-        # output dim comes from
-        # possible_functor_categories x {functor_on_L, functor_on_R} + NULL
-        # NULL is for the case that no available categories could be the
-        # functor for the parent category
-        self.rule_mlp = nn.Linear(self.num_cats, 2*self.num_cats+1)
+        # maps parent_cat to arg_categories x {arg_on_L, arg_on_R}
+        self.rule_mlp = nn.Linear(self.num_nf_cats, 2*self.num_nf_cats)
 
         # example of manually seeding weights (for troubleshooting)
         # note: weight dims are (out_feats, in_feats)
@@ -81,104 +79,90 @@ class BasicCGInducer(nn.Module):
 
         self.parser = BatchCKYParser(
             self.ix2cat,
-            self.l2r,
-            self.r2l, 
-            nt=self.num_cats,
-            t=0,
+            self.l_functors,
+            self.r_functors,
+            q=self.num_cats,
+            q_nf=self.num_nf_cats,
             device=self.device
         )
 
 
     def init_cats_and_masks(self):
         if self.cats_json is not None:
-            all_cat_trees = cat_trees_from_json(self.cats_json)
+            # TODO implement this option -- will require a different
+            # approach to figuring out nf_cats etc
+            raise NotImplementedError()
+            #all_cats = cat_trees_from_json(self.cats_json)
         else:
             max_depth = self.max_cat_depth
-            # -a and -b are the same as \ and / in other notation
-            operations = ["-a", "-b"]
-            primitives = list()
-            for i in range(self.num_primitives):
-                primitives.append(str(i))
-            structs = enumerate_structures(max_depth)
+            # TODO pass in optional 3rd arg (max cat depth) from
+            # config option
+            cats_by_max_depth, ix2cat = generate_categories(
+                self.num_primitives,
+                self.max_cat_depth
+            )
 
-            all_cat_trees = list()
-            for s in structs:
-                lts = generate_labeled_trees(s, operations, primitives)
-                all_cat_trees.extend(lts)
+        all_cats = cats_by_max_depth[self.max_cat_depth]
+        num_cats = len(all_cats)
 
-        ix2cat = bidict.bidict()
-        for t in all_cat_trees:
-            ix2cat[len(ix2cat)] = t
+        # nf_cats (non-functor cats) are the categories that can be either an 
+        # argument
+        # taken by a functor category, or the result returned by the
+        # functor. Since a functor's depth is one greater than its
+        # argument and result, the max depth of an argument or result
+        # is self.max_cat_depth-1
+        nf_cats = cats_by_max_depth[self.max_cat_depth-1]
+        num_nf_cats = len(nf_cats)
 
-        num_cats = len(ix2cat)
-
-        # TODO change to np.inf?
-        QUASI_INF = 10000000
-        # rule_mask[:, 0:num_cats-1]: left child is functor
-        # rule_mask[:, num_cats:2*num_cats-1]: right child is functor
-        # rule_mask[:, 2*num_cats]: NULL (no category can be functor)
-        # mask values are 0 if combination is possible, -QUASI_INF otherwise
-        rule_mask = torch.full((num_cats, 2*num_cats+1), fill_value=-QUASI_INF)
-        pc_null_ix = 2 * num_cats
-        rule_mask[:, pc_null_ix] = 0
+        # only allow primitive categories to be at the root of the parse
+        # tree
         can_be_root = torch.full((num_cats,), fill_value=-np.inf)
+        for cat in cats_by_max_depth[0]:
+            assert cat.is_primitive()
+            ix = ix2cat.inverse[cat]
+            can_be_root[ix] = 0
 
-        # maps left-child functor category (index) to right-child argument
-        # (value at index). If the left-child category on the left cannot be
-        # a functor taking an argument on the right, the value will be lr_null_ix
-        # (a dummy category)
-        l2r = torch.empty(num_cats+1, dtype=torch.int64)
-        lr_null_ix = num_cats
-        l2r[lr_null_ix] = lr_null_ix
-        # vice versa
-        r2l = torch.empty(num_cats+1, dtype=torch.int64)
-        r2l[lr_null_ix] = lr_null_ix
-            
-        for cat_ix in ix2cat:
-            cat = ix2cat[cat_ix]
-            cat_children = cat.children(cat.root)
-            if len(cat_children) == 0:
-                # only primitives cats can be the root of a parse tree
-                can_be_root[cat_ix] = 0
-                # primitives can't ever be functors
-                l2r[cat_ix] = lr_null_ix
-                r2l[cat_ix] = lr_null_ix
-            else:
-                assert len(cat_children) == 2
-                # example: for the category {X-aY}-bZ, argument is Z
-                # and result is X-aY
-                result, arg = cat_children
-                result = cat.subtree(result.identifier)
-                result_ix = ix2cat.inverse[result]
-                arg = cat.subtree(arg.identifier)
+        # given an argument cat index (i) and a result cat 
+        # index (j), l_functors[i, j] gives the functor cat that
+        # takes cat i as a right argument and returns cat j 
+        # e.g. for the rule V -> V-bN N:
+        # l_functors[N, V] = V-bN
+        l_functors = torch.empty(
+            num_nf_cats, num_nf_cats, dtype=torch.int64
+        )
+
+        # same idea but functor appears on the right
+        # e.g. for the rule V -> N V-aN:
+        # r_functors[N, V] = V-aN
+        r_functors = torch.empty(
+            num_nf_cats, num_nf_cats, dtype=torch.int64
+        )
+
+        for res in nf_cats:
+            res_ix = ix2cat.inverse[res]
+            for arg in nf_cats:
                 arg_ix = ix2cat.inverse[arg]
-                root_tag = cat.get_node(cat.root).tag 
-                if root_tag == "-b":
-                    # left child is functor
-                    rule_mask[result_ix, cat_ix] = 0
-                    rule_mask[result_ix, pc_null_ix] = -QUASI_INF
-                    
-                    l2r[cat_ix] = arg_ix
-                    r2l[cat_ix] = lr_null_ix
-                else:
-                    assert root_tag == "-a"
-                    # right child is functor
-                    rule_mask[result_ix, cat_ix+num_cats] = 0
-                    rule_mask[result_ix, pc_null_ix] = -QUASI_INF
-                    r2l[cat_ix] = arg_ix
-                    l2r[cat_ix] = lr_null_ix
+                # TODO possible not to hardcode operator?
+                l_func = CGNode("-b", res, arg)
+                l_func_ix = ix2cat.inverse[l_func]
+                l_functors[arg_ix, res_ix] = l_func_ix
+   
+                r_func = CGNode("-a", res, arg)
+                r_func_ix = ix2cat.inverse[r_func]
+                r_functors[arg_ix, res_ix] = r_func_ix
 
 
         print("CEC num cats: {}".format(num_cats))
         self.num_cats = num_cats
+        print("CEC num non-functor cats: {}".format(num_nf_cats))
+        self.num_nf_cats = num_nf_cats
         self.ix2cat = ix2cat
         print("CEC ix2cat sample: {}".format(random.sample(ix2cat.values(), 100)))
-        self.l2r = l2r
-        self.r2l = r2l
-        self.rule_mask = rule_mask.to(self.device)
+        self.l_functors = l_functors.to(self.device)
+        self.r_functors = r_functors.to(self.device)
         self.root_mask = can_be_root.to(self.device)
 
-
+        
     def forward(self, x, eval=False, argmax=False, use_mean=False, indices=None, set_grammar=True, return_ll=True, **kwargs):
         # x : batch x n
         if set_grammar:
@@ -186,34 +170,40 @@ class BasicCGInducer(nn.Module):
 
             fake_emb = self.fake_emb
             num_cats = self.num_cats
+            num_nf_cats = self.num_nf_cats
 
+            # dim: Q
             root_scores = F.log_softmax(
                 self.root_mask+self.root_mlp(self.root_emb).squeeze(), dim=0
             )
             full_p0 = root_scores
 
 
-            rule_scores = F.log_softmax(
-                self.rule_mlp(fake_emb) + self.rule_mask, dim=1
-            ) # C x (2C+1)
-
-            # Note: column[2*num_cats] is for NULL,
-            # which is thrown out here
-            rule_score_l = rule_scores[:, :num_cats]
-            rule_score_r = rule_scores[:, num_cats:2*num_cats]
+            # dim: Qnf x 2Qnf
+            rule_scores = F.log_softmax(self.rule_mlp(fake_emb), dim=1)
+            # dim: Qnf x Qnf
+            rule_scores_larg = rule_scores[:, :num_nf_cats]
+            # dim: Qnf x Qnf
+            rule_scores_rarg = rule_scores[:, num_nf_cats:]
 
             nt_emb = self.nt_emb
+            # dim: Q x 2
             # split_scores[:, 0] gives P(terminal=0 | cat)
             # split_scores[:, 1] gives P(terminal=1 | cat)
             split_scores = F.log_softmax(self.split_mlp(nt_emb), dim=1)
 
-            full_G_l = rule_score_l + split_scores[:, 0][..., None]
-            full_G_r = rule_score_r + split_scores[:, 0][..., None]
+            #full_G_larg = rule_scores_larg + split_scores[:, 0][..., None]
+            #full_G_rarg = rule_scores_rarg + split_scores[:, 0][..., None]
+            # dim: Qnf x Qnf
+            full_G_larg = rule_scores_larg \
+                          + split_scores[:num_nf_cats, 0][..., None]
+            full_G_rarg = rule_scores_rarg \
+                          + split_scores[:num_nf_cats, 0][..., None]
 
             self.parser.set_models(
                 full_p0,
-                full_G_l,
-                full_G_r,
+                full_G_larg,
+                full_G_rarg,
                 self.emission,
                 pcfg_split=split_scores
             )

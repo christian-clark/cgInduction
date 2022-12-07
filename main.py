@@ -241,6 +241,23 @@ def train():
         checkpoint = torch.load(opt.checkpoint)
         model.load_state_dict(checkpoint)
 
+    # evaluate the untrained model (written in log as epoch -1)
+    if opt.eval_parsing:
+        # evaluate on CPU
+        model.to(opt.eval_device)
+
+        total_eval_likelihoods, trees = model_use.parse_dataset(model, valid, -1)
+        total_eval_likelihoods = total_eval_likelihoods
+
+        tree_fn, valid_pred_trees = postprocess.print_trees(trees, valid_data, -1, opt)
+        eval_access(valid_pred_trees, valid_tree_list, model.writer, -1)
+
+        # back to GPU for training
+        model.to(opt.device)
+
+    else:
+        total_eval_likelihoods = model_use.likelihood_dataset(model, valid, -1) * (-1)
+
     for epoch in range(opt.start_epoch, opt.max_epoch):
 
         if train_list and epoch >= len(train_list):
