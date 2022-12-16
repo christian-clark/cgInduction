@@ -1,6 +1,8 @@
 import numpy as np
 from nltk import tree
 from collections import Counter, defaultdict
+
+
 class Rule:
     def __init__(self, lhs, rhs1, rhs2=None):
         self.lhs = lhs
@@ -14,6 +16,7 @@ class Rule:
             return (self.lhs, self.rhs1, self.rhs2)
         else:
             return (self.lhs, self.rhs1)
+
 
 def nodes_to_tree(nodes, sent):
     sent_len = sent.shape[0]
@@ -47,6 +50,7 @@ def nodes_to_tree(nodes, sent):
 
 class Node:
     def __init__(self, cat, cat_str, i, j, D=0, K=0, parent=None):
+        # TODO get rid of unnecessary stuff here
         self.D = D
         self.K = K
         self.cat = int(cat)
@@ -87,9 +91,7 @@ class Node:
             return True
         return False
 
-# class Node_tree:
-#     def
-# used in calc right branching warning.
+
 def calc_branching_score(t):
     r_branch = 0
     l_branch = 0

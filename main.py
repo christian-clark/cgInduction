@@ -192,15 +192,22 @@ def train():
 
     logging.info('vocab size: {0}'.format(len(word_lexicon)))
 
+    print("CEC max arg depth: {}".format(opt.max_arg_depth))
+
     if opt.model_type not in {"word", "char"}:
         raise ValueError('not recognized model type! {} '.format(opt.model_type))
     else:
         parser = BasicCGInducer(
-            num_primitives=opt.num_primitives, max_cat_depth=opt.max_cat_depth,
+            num_primitives=opt.num_primitives,
+            max_func_depth=opt.max_func_depth,
+            max_arg_depth=opt.max_arg_depth,
             cats_json=opt.cats_json,
-            num_chars=len(char_lexicon), device=opt.device,
-            eval_device=opt.eval_device, num_words=len(word_lexicon),
-            model_type=opt.model_type, state_dim=opt.state_dim,
+            num_chars=len(char_lexicon),
+            device=opt.device,
+            eval_device=opt.eval_device,
+            num_words=len(word_lexicon),
+            model_type=opt.model_type,
+            state_dim=opt.state_dim,
             char_grams_lexicon=char_grams_lexicon, 
             all_words_char_features=all_words_char_features,
             rnn_hidden_dim=opt.rnn_hidden_dim

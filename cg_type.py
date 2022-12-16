@@ -3,20 +3,20 @@ from itertools import product as prod
 
 
 class CGNode:
-    def __init__(self, val=None, arg=None, res=None):
+    def __init__(self, val=None, res=None, arg=None):
         if val is None:
             self.val = "x"
         else:
             self.val = val
-        if arg is None:
-            assert res is None
-            self.arg_res = None
+        if res is None:
+            assert arg is None
+            self.res_arg = None
         else:
-            assert res is not None
-            self.arg_res = (arg, res)
+            assert arg is not None
+            self.res_arg = (res, arg)
 
     def is_primitive(self):
-        return self.arg_res is None
+        return self.res_arg is None
 
     def __str__(self):
         stack, out = list(), list()
@@ -28,7 +28,7 @@ class CGNode:
         if node.is_primitive():
             out.append(node.val)
         else:
-            arg, res = node.arg_res
+            res, arg = node.res_arg
             stack.append(node.val)
             out.append("{")
             CGNode._build_str(res, stack, out)
@@ -43,9 +43,9 @@ class CGNode:
         if self.is_primitive():
             return other.is_primitive() and self.val == other.val
         else:
-            arg1, res1 = self.arg_res
-            arg2, res2 = other.arg_res
-            return arg1 == arg2 and  res1 == res2
+            res1, arg1 = self.res_arg
+            res2, arg2 = other.res_arg
+            return res1 == res2 and  arg1 == arg2
 
     # needed for building sets of CGNodes
     def __hash__(self):

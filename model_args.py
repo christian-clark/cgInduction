@@ -22,7 +22,8 @@ def parse_args(args):
     #cmd.add_argument("--num_nonterminal", default=30, type=int, help="number of nonterminal categories")
     #cmd.add_argument("--num_preterminal", default=60, type=int, help="number of preterminal categories")
     cmd.add_argument("--num_primitives", default=4, type=int, help="number of primitive categories")
-    cmd.add_argument("--max_cat_depth", default=2, type=int, help="maximum depth of a complex category (e.g. V-aN-bN has depth 2)")
+    cmd.add_argument("--max_func_depth", default=2, type=int, help="maximum depth of a functor category")
+    cmd.add_argument("--max_arg_depth", type=int, help="maximum depth of an argument category")
     cmd.add_argument("--cats_json", default=None, help="json file containing the categories to be used")
     cmd.add_argument("--turn_off_char", default=False, action="store_true", help='turn off the char embedder')
 
