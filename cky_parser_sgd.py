@@ -124,13 +124,21 @@ class BatchCKYParser:
             c = torch.flip(self.right_chart[0:height, jmin:jmax], dims=[0])
             # TODO this can be optimized by taking advantage of the fact that
             # maximally deep categories can only appear on preterminal nodes
-            dot_temp_mat = torch.logsumexp(b[...,None]+c[...,None,:], dim=0)
-            # dot_temp_mat[..., i, j] is score for left child i, right child j
+            # NOTE: doing the logsumexp here means this takes more memory
+            # than the parallel line in compute_viterbi_inside
             # dim: imax x batch_size x Qfunc x Qfunc
-            # TODO does this actually do anything? isn't it already in this shape after the previous step?
-            #dot_temp_mat = dot_temp_mat.view(
-            #    imax, batch_size, self.Qfunc, self.Qfunc
-            #)
+            #dot_temp_mat = torch.logsumexp(b[...,None]+c[...,None,:], dim=0)
+            # dot_temp_mat[..., i, j] is score for left child i, right child j
+
+            # dim: height x imax x batch_size x Qfunc x Qarg
+            children_score_larg = torch.logsumexp(
+                b[...,None,:self.Qarg] + c[...,None], dim=0
+            )
+
+            # dim: height x imax x batch_size x Qfunc x Qarg
+            children_score_rarg = torch.logsumexp(
+                b[...,None] + c[...,None,:self.Qarg], dim=0
+            )
 
             # scores_larg[..., i, j] is score for parent i, larg j
             # dim: imax x batch_size x Qres x Qarg
@@ -152,25 +160,33 @@ class BatchCKYParser:
             # dtm_permute [..., i, j] is score for right child i, left child j
             # needed to play with gather() correctly for larg case
             # dim: imax x batch_size x Qfunc x Qfunc
-            dtm_permute = dot_temp_mat.permute(0, 1, 3, 2)
+            #dtm_permute = dot_temp_mat.permute(0, 1, 3, 2)
 
             # dot_temp_mat_larg[..., i, j] is score for parent i, larg j
             # dim: imax x batch_size x Qres x Qarg
-            dot_temp_mat_larg = torch.gather(
-                dtm_permute[..., :self.Qarg], dim=2, index=rfunc_ixs
+            #dot_temp_mat_larg = torch.gather(
+            #    dtm_permute[..., :self.Qarg], dim=2, index=rfunc_ixs
+            #)
+            children_score_larg = torch.gather(
+                children_score_larg, dim=2, index=rfunc_ixs
             )
             #print("CEC dot_temp_mat_larg shape: {}".format(dot_temp_mat_larg.shape))
 
             # dot_temp_mat_larg[..., i, j] is score for parent i, rarg j
             # dim: imax x batch_size x Qres x Qarg
-            dot_temp_mat_rarg = torch.gather(
-                dot_temp_mat[..., :self.Qarg], dim=2, index=lfunc_ixs
+            #dot_temp_mat_rarg = torch.gather(
+            #    dot_temp_mat[..., :self.Qarg], dim=2, index=lfunc_ixs
+            #)
+            children_score_rarg = torch.gather(
+                children_score_rarg, dim=2, index=lfunc_ixs
             )
 
             # TODO can this be done more space-efficiently?
             # dim: imax x batch_size x Qres x Qarg
-            y_larg = scores_larg + dot_temp_mat_larg
-            y_rarg = scores_rarg + dot_temp_mat_rarg
+            #y_larg = scores_larg + dot_temp_mat_larg
+            #y_rarg = scores_rarg + dot_temp_mat_rarg
+            y_larg = scores_larg + children_score_larg
+            y_rarg = scores_rarg + children_score_rarg
             # combine left and right arg probabilities
             # dim: imax x batch_size x Qres x Qarg
             y1 = torch.logsumexp(torch.stack([y_larg, y_rarg]), dim=0)
@@ -259,10 +275,15 @@ class BatchCKYParser:
             #print(c)
 
             # dim: height x imax x batch_size x Qfunc x Qfunc
-            dot_temp_mat = ( b[...,None]+c[...,None,:] ).view(
-                height, imax, batch_size, self.Qfunc, self.Qfunc
-            )
+            #dot_temp_mat = ( b[...,None]+c[...,None,:] ).view(
+                #height, imax, batch_size, self.Qfunc, self.Qfunc
+            #)
 
+            # dim: height x imax x batch_size x Qfunc x Qarg
+            children_score_larg = b[...,None,:self.Qarg]+c[...,None]
+
+            # dim: height x imax x batch_size x Qfunc x Qarg
+            children_score_rarg = b[...,None]+c[...,None,:self.Qarg]
             #print("CEC dot_temp_mat")
             #print(dot_temp_mat)
 
@@ -289,18 +310,26 @@ class BatchCKYParser:
             #print("CEC lfunc_ixs")
             #print(lfunc_ixs)
 
-            dtm_permute = dot_temp_mat.permute(0, 1, 2, 4, 3)
+            #dtm_permute = dot_temp_mat.permute(0, 1, 2, 4, 3)
 
             #print("CEC dtm_permute")
             #print(dtm_permute)
 
             # dim: height x imax x batch_size x Qres x Qarg
-            dot_temp_mat_larg = torch.gather(
-                dtm_permute[..., :self.Qarg], dim=3, index=rfunc_ixs
+            #dot_temp_mat_larg = torch.gather(
+            #    dtm_permute[..., :self.Qarg], dim=3, index=rfunc_ixs
+            #)
+
+            children_score_larg = torch.gather(
+                children_score_larg, dim=3, index=rfunc_ixs
             )
 
-            dot_temp_mat_rarg = torch.gather(
-                dot_temp_mat[..., :self.Qarg], dim=3, index=lfunc_ixs
+            #dot_temp_mat_rarg = torch.gather(
+            #    dot_temp_mat[..., :self.Qarg], dim=3, index=lfunc_ixs
+            #)
+
+            children_score_rarg = torch.gather(
+                children_score_rarg, dim=3, index=lfunc_ixs
             )
 
             #print("CEC dot_temp_mat_larg")
@@ -309,8 +338,10 @@ class BatchCKYParser:
             #print(dot_temp_mat_rarg)
 
             # dim: height x imax x batch_size x Qres x Qarg
-            combined_scores_larg = scores_larg + dot_temp_mat_larg
-            combined_scores_rarg = scores_rarg + dot_temp_mat_rarg
+            #combined_scores_larg = scores_larg + dot_temp_mat_larg
+            #combined_scores_rarg = scores_rarg + dot_temp_mat_rarg
+            combined_scores_larg = scores_larg + children_score_larg
+            combined_scores_rarg = scores_rarg + children_score_rarg
 
             #print("CEC combined_scores_larg")
             #print(combined_scores_larg)
@@ -344,7 +375,8 @@ class BatchCKYParser:
             #print(largmax_kbc)
 
             # dim: imax x batch_size x Qres
-            l_ks = largmax_kbc//self.Qarg + torch.arange(1, imax+1)[:, None, None]. to(self.device)
+            l_ks = torch.div(largmax_kbc, self.Qarg, rounding_mode="floor") \
+                   + torch.arange(1, imax+1)[:, None, None]. to(self.device)
             # dim: imax x batch_size x Qres
             l_bs = largmax_kbc % self.Qarg
 
@@ -374,7 +406,8 @@ class BatchCKYParser:
             l_kbc = torch.stack([l_ks, l_bs, l_cs], dim=0)
 
             # dim: imax x batch_size x Qres
-            r_ks = rargmax_kbc//self.Qarg + torch.arange(1, imax+1)[:, None, None]. to(self.device)
+            r_ks = torch.div(rargmax_kbc, self.Qarg, rounding_mode="floor") \
+                   + torch.arange(1, imax+1)[:, None, None]. to(self.device)
             # dim: imax x batch_size x Qres
             r_cs = rargmax_kbc % self.Qarg
 
