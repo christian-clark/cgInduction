@@ -14,12 +14,12 @@ EOW = '<eow>'
 LRB = '-LRB-'
 RRB = '-RRB-'
 
+
 def divide(data, valid_size, gold_tree_list, include_valid_in_train=False, all_train_as_valid=False):
     logging.info('include valid in train is {}; all train as valid is {}'.format(include_valid_in_train, all_train_as_valid))
     assert len(data) == len(gold_tree_list)
     valid_size = min(valid_size, len(data) // 10)
     train_size = len(data) - valid_size
-    # random.shuffle(data)
     if include_valid_in_train:
         return data, data[train_size:], gold_tree_list, gold_tree_list[train_size:]
     elif all_train_as_valid:
@@ -175,14 +175,13 @@ def create_one_batch(x, word2id, char2id, oov=OOV, pad=PAD, sort=True, device='c
 
 
 # shuffle training examples and create mini-batches
-def create_batches(x, batch_size, word2id, char2id, eval=False, perm=None, shuffle=True, sort=True, opt=None):
+def create_batches(
+        x, batch_size, word2id, char2id, eval=False, perm=None, 
+        shuffle=True, sort=True, device="cpu", eval_device="cpu"
+    ):
 
-    assert opt is not None
     if eval:
-        device = opt.eval_device
-    else:
-        device = opt.device
-    korean_phonetics = opt.korean_phonetics
+        device = eval_device
 
     lst = perm or list(range(len(x)))
     if shuffle:
@@ -260,6 +259,7 @@ def create_batches(x, batch_size, word2id, char2id, eval=False, perm=None, shuff
     batch_indices = [batch_indices[i] for i in perm]
 
     return batches_w, batches_c, batches_var_c, batches_lens, batches_masks, batch_indices
+
 
 def read_markers(fname):
     markers = [0]
