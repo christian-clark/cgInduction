@@ -11,7 +11,9 @@ def slice_tensor(tensor, batch_size, flatten=False):
                  for i in range(0, tensor.shape[0], batch_size)])
 
 
-def train_model(epoch, opt, model, optimizer, train):
+def train_model(
+        epoch, model, optimizer, train, batch_size, max_grad_norm
+    ):
     """
     Training model for one epoch
     """
@@ -43,12 +45,12 @@ def train_model(epoch, opt, model, optimizer, train):
         optimizer.zero_grad()
 
         if slicing_flag:
-            ws, cs = slice_tensor(w, opt.batch_size), slice_tensor(c, opt.batch_size)
+            ws, cs = slice_tensor(w, batch_size), slice_tensor(c, batch_size)
             if cs is None:
                 cs = [None] * len(ws)
             sliced_masks = []
-            sliced_masks.append(slice_tensor(masks[0], opt.batch_size))
-            master_mask = torch.arange(opt.batch_size * w.shape[1], device=w.device).reshape(opt.batch_size, -1)
+            sliced_masks.append(slice_tensor(masks[0], batch_size))
+            master_mask = torch.arange(batch_size * w.shape[1], device=w.device).reshape(batch_size, -1)
             fw_mask = master_mask[:, :-1]
             bw_mask = master_mask[:, 1:]
             sliced_masks.append([fw_mask[:wss.shape[0]].flatten() for wss in ws])
@@ -65,8 +67,8 @@ def train_model(epoch, opt, model, optimizer, train):
 
         total_tag += sum(lens)
 
-        if opt.max_grad_norm > 0:
-            torch.nn.utils.clip_grad_norm_(model.parameters(), opt.max_grad_norm)
+        if max_grad_norm > 0:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
         optimizer.step()
 
         global_step = max_cnt * epoch + cnt
