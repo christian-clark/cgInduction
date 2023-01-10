@@ -9,45 +9,40 @@ from cg_type import CGNode, generate_categories, trees_from_json
 class BasicCGInducer(nn.Module):
     def __init__(
             self,
-            config,
-            num_chars,
-            num_words
+            num_primitives=4,
+            max_func_depth=2,
+            max_arg_depth=None,
+            cats_json=None,
+            state_dim=64,
+            num_chars=100,
+            device='cpu',
+            eval_device="cpu",
+            model_type='char',
+            num_words=100,
+            char_grams_lexicon=None,
+            all_words_char_features=None,
+            rnn_hidden_dim=320
         ):
-            #num_primitives=4,
-            #max_func_depth=2,
-            #max_arg_depth=None,
-            #cats_json=None,
-            #state_dim=64,
-            #num_chars=100,
-            #device='cpu',
-            #eval_device="cpu",
-            #model_type='char',
-            #num_words=100,
-            #rnn_hidden_dim=320
         super(BasicCGInducer, self).__init__()
-        self.state_dim = config.getint("state_dim")
-        self.rnn_hidden_dim = config.getint("rnn_hidden_dim")
-        self.model_type = config["model_type"]
-        self.num_primitives = config.getint("num_primitives")
-        self.max_func_depth = config.getint("max_func_depth")
-        self.max_arg_depth = self.max_func_depth - 1
-        if "max_arg_depth" in config:
-            self.max_arg_depth = config.getint("max_arg_depth")
-        self.cats_json = None
-        if "cats_json" in config:
-            self.cats_json = config["cats_json"]
-        self.device = config["device"]
-        self.eval_device = config["eval_device"]
+        self.state_dim = state_dim
+        self.rnn_hidden_dim = rnn_hidden_dim
+        self.model_type = model_type
+        self.num_primitives = num_primitives
+        self.max_func_depth = max_func_depth
+        self.max_arg_depth = max_arg_depth
+        self.cats_json = cats_json
+        self.device = device
+        self.eval_device = eval_device
 
         if self.model_type == 'char':
             self.emit_prob_model = CharProbRNN(
                 num_chars,
                 state_dim=self.state_dim,
-                hidden_size=self.rnn_hidden_dim
+                hidden_size=rnn_hidden_dim
             )
         elif self.model_type == 'word':
             self.emit_prob_model = WordProbFCFixVocabCompound(
-                num_words, self.state_dim
+                num_words, state_dim
             )
         else:
             raise ValueError("Model type should be char or word")
@@ -56,12 +51,9 @@ class BasicCGInducer(nn.Module):
         # CG: "embeddings" for the categories are just one-hot vectors
         # these are used for result categories
         self.fake_emb = nn.Parameter(torch.eye(self.num_res_cats))
-        state_dim = self.state_dim
         # actual embeddings are used to calculate split scores
         # (i.e. prob of terminal vs nonterminal)
-        self.nt_emb = nn.Parameter(
-            torch.randn(self.num_func_cats, state_dim)
-        )
+        self.nt_emb = nn.Parameter(torch.randn(self.num_func_cats, state_dim))
         # maps res_cat to arg_cat x {arg_on_L, arg_on_R}
         self.rule_mlp = nn.Linear(self.num_res_cats, 2*self.num_arg_cats)
 
@@ -109,6 +101,8 @@ class BasicCGInducer(nn.Module):
                 self.max_func_depth,
                 self.max_arg_depth
             )
+
+        print("CEC len(ix2cat): {}".format(len(ix2cat)))
 
         func_cats = cats_by_max_depth[self.max_func_depth]
         num_func_cats = len(func_cats)
@@ -165,10 +159,17 @@ class BasicCGInducer(nn.Module):
                 rfunc_ix = ix2cat.inverse[rfunc]
                 rfunc_ixs[res_ix, arg_ix] = rfunc_ix
 
+
+        print("CEC num func cats: {}".format(num_func_cats))
         self.num_func_cats = num_func_cats
+        print("CEC num res cats: {}".format(num_res_cats))
         self.num_res_cats = num_res_cats
+        print("CEC num arg cats: {}".format(num_arg_cats))
         self.num_arg_cats = num_arg_cats
         self.ix2cat = ix2cat
+        #print("CEC ix2cat sample: {}".format(random.sample(ix2cat.items(), 100)))
+        print("CEC ix2cat sample: {}".format(list(ix2cat.items())[:100]))
+        #print("CEC ix2cat: {}".format(ix2cat))
         self.lfunc_ixs = lfunc_ixs.to(self.device)
         self.rfunc_ixs = rfunc_ixs.to(self.device)
         self.root_mask = can_be_root.to(self.device)
