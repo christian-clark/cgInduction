@@ -204,6 +204,7 @@ class BasicCGInducer(nn.Module):
             # dim: Qfunc x 2
             # split_scores[:, 0] gives P(terminal=0 | cat)
             # split_scores[:, 1] gives P(terminal=1 | cat)
+            #split_scores = F.log_softmax(nn.Dropout()(self.split_mlp(nt_emb)), dim=1)
             split_scores = F.log_softmax(self.split_mlp(nt_emb), dim=1)
 
             #full_G_larg = rule_scores_larg + split_scores[:, 0][..., None]
@@ -227,8 +228,7 @@ class BasicCGInducer(nn.Module):
             x = self.emit_prob_model(x, self.nt_emb, set_grammar=set_grammar)
         else:
             assert self.model_type == "char"
-            # TODO better to pass in actual embedding instead of one-hot?
-            x = self.emit_prob_model(x, self.fake_emb, set_grammar=set_grammar)
+            x = self.emit_prob_model(x, self.nt_emb, set_grammar=set_grammar)
 
         if argmax:
             if eval and self.device != self.eval_device:
