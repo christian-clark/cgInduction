@@ -191,8 +191,15 @@ class BasicCGInducer(nn.Module):
             )
             full_p0 = root_scores
 
+            LARG_PENALTY = 100
+            larg_penalty = torch.full((num_res_cats, num_arg_cats), -LARG_PENALTY)
+            rarg_penalty = torch.full((num_res_cats, num_arg_cats), 0)
+            penalty = torch.concat([larg_penalty, rarg_penalty], dim=1).to(self.device)
 
             # dim: Qres x 2Qarg
+            # use this line to add a bias toward forward function application (i.e.
+            # argument always on right)
+            #rule_scores = F.log_softmax(self.rule_mlp(fake_emb)+penalty, dim=1)
             rule_scores = F.log_softmax(self.rule_mlp(fake_emb), dim=1)
             # dim: Qres x Qarg
             rule_scores_larg = rule_scores[:, :num_arg_cats]
