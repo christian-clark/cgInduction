@@ -8,6 +8,10 @@ import numpy as np
 from collections import Counter
 import logging
 from copy import deepcopy
+import seaborn as sns
+import matplotlib.pyplot as plt
+from sklearn.preprocessing import normalize
+
 ############
 # PIOC files must be fix-terminal-ed first.
 ############
@@ -845,5 +849,199 @@ def run_r_analysis(args):
 
     import pickle
     pickle.dump((ptg_accu_d, ptlr_accu_d), open('r13e16_induced_rules.pkl', 'wb'))
+
+    return True
+
+
+def nont_heatmap(args):
+
+    ctx = multiprocessing.get_context('spawn')
+    PROCESS_NUM = 1
+    if isinstance(args, list):
+        parser = argparse.ArgumentParser()
+        parser.add_argument('--gold', '-g', required=True, type=str, help='gold tree fn')
+        parser.add_argument('--pred', '-p', required=True, type=str, help='predicted tree fn')
+        args = parser.parse_args(args)
+
+        gold_fn = args.gold
+        pred_fn = args.pred
+
+        if pred_fn.endswith('.gz'):
+            with gzip.open(pred_fn, 'rt') as pfh:
+                pred_lines = pfh.readlines()
+        else:
+            with open(pred_fn) as pfh:
+                pred_lines = pfh.readlines()
+        new_pred_lines = []
+        for line in pred_lines:
+            if '#!#!' in line:
+                _, t = line.split('#!#!')
+            else:
+                t = line
+            if t == "\n":
+                t = "(x x)"
+            new_pred_lines.append(t)
+        pred_lines = new_pred_lines
+
+        with open(gold_fn) as gfh:
+            gold_lines = gfh.readlines()
+
+        with ctx.Pool(PROCESS_NUM) as pool:
+
+            gold_trees = pool.map(nltk.Tree.fromstring, gold_lines)
+            pred_trees = pool.map(nltk.Tree.fromstring, pred_lines)
+    else:
+        gold_trees, pred_trees = args
+
+    assert len(gold_trees) == len(pred_trees), "Number of gold trees: {}; number of predicted trees: {}".format(len(gold_trees),
+                                                                                                                len(pred_trees))
+    keep_punc_indicator = 1
+
+    with ctx.Pool(PROCESS_NUM) as pool:
+        gold_trees = pool.starmap(delete_trace, zip(gold_trees))
+
+    with ctx.Pool(PROCESS_NUM) as pool:
+        # logging.info('step 1')
+        do_nothing_indicator = [keep_punc_indicator] * len(gold_trees)
+
+        gold_trees_and_punc_indices = pool.starmap(delete_punc, zip(gold_trees, do_nothing_indicator))
+
+    with ctx.Pool(PROCESS_NUM) as pool:
+        # logging.info('step 2')
+        processed_gold_trees, gold_indices_of_punc = zip(*gold_trees_and_punc_indices)
+        # print(processed_gold_trees[0])
+
+        pred_trees_and_empty_lists = pool.starmap(delete_punc, zip(pred_trees, do_nothing_indicator, gold_indices_of_punc))
+        processed_pred_trees, _ = zip(*pred_trees_and_empty_lists)
+    with ctx.Pool(PROCESS_NUM) as pool:
+        # logging.info('step 3')
+        processed_gold_trees, processed_pred_trees = zip(*pool.map(single_fix_terms, zip(processed_gold_trees, processed_pred_trees)))
+
+
+    with ctx.Pool(PROCESS_NUM) as pool:
+
+        # logging.info('step 4')
+
+        _, _, _, _, matching_gold_labels, matching_pred_labels, _, gold_labeled_counts, _,\
+        crossing_pred_counts, pred_labeled_counts = zip(*pool.map(eval, zip(processed_gold_trees,
+                                                                            processed_pred_trees)))
+
+    # logging.info('step 5')
+    matching_gold_labels = list(chain.from_iterable(matching_gold_labels))
+    matching_pred_labels = list(chain.from_iterable(matching_pred_labels))
+
+    accu_gold_counts = Counter()
+    accu_pred_counts = Counter()
+    accu_cross_counts = Counter()
+
+    # logging.info('step 6')
+
+    for g_counter, p_counter, c_counter in zip(gold_labeled_counts, pred_labeled_counts, crossing_pred_counts):
+        accu_gold_counts.update(g_counter)
+        accu_pred_counts.update(p_counter)
+        accu_cross_counts.update(c_counter)
+
+    # orig
+    #top_gold_cats = [cat for cat, _ in accu_gold_counts.most_common()]
+    #top_pred_cats = [cat for cat, _ in accu_pred_counts.most_common(20)]
+
+    # mod
+    top_gold_cats = [cat for cat, _ in accu_gold_counts.most_common(10)]
+    top_pred_cats = [cat for cat, _ in accu_pred_counts.most_common(10)]
+
+
+    # rec
+    #pred_cats = top_pred_cats + ["Other", "NotBracketed"]
+    # prec
+    pred_cats = top_pred_cats + ["Other"]
+
+    # mod rec
+    #gold_cats = top_gold_cats + ["Other"]
+    # orig rec
+    #gold_cats = top_gold_cats
+
+    # orig prec
+    #gold_cats = top_gold_cats + ["NonCross", "Cross"]
+    # mod prec
+    gold_cats = top_gold_cats + ["Other", "NonCross", "Cross"]
+
+
+    filtered_pred = []
+    for cat in matching_pred_labels:
+        if cat in top_pred_cats:
+            filtered_pred.append(cat)
+        else:
+            filtered_pred.append("Other")
+
+    # mod
+    filtered_gold = []
+    for cat in matching_gold_labels:
+        if cat in top_gold_cats:
+            filtered_gold.append(cat)
+        else:
+            filtered_gold.append("Other")
+
+    pred_other_count = 0
+    for cat in accu_pred_counts:
+        if cat not in top_pred_cats:
+            pred_other_count += accu_pred_counts[cat]
+
+    #rec
+    #cf_matrix = np.zeros((len(gold_cats), len(pred_cats)), dtype=int)
+    # prec
+    cf_matrix = np.zeros((len(pred_cats), len(gold_cats)), dtype=int)
+
+    # orig
+    #for g, p in zip(matching_gold_labels, filtered_pred):
+
+    # mod
+    for g, p in zip(filtered_gold, filtered_pred):
+
+        #rec
+        #cf_matrix[gold_cats.index(g)][pred_cats.index(p)] += 1
+        #prec
+        cf_matrix[pred_cats.index(p)][gold_cats.index(g)] += 1
+
+    # rec
+#    for i in range(len(top_gold_cats)):
+#         print(accu_gold_counts[top_gold_cats[i]])
+#         cf_matrix[i][-1] = accu_gold_counts[top_gold_cats[i]] - np.sum(cf_matrix[i])
+#
+
+   # prec
+    for key in accu_cross_counts:
+        if key in pred_cats:
+            cf_matrix[pred_cats.index(key)][-2] = accu_cross_counts[key]
+            cf_matrix[pred_cats.index(key)][-1] = accu_pred_counts[key] - np.sum(cf_matrix[pred_cats.index(key)])
+        else:
+            cf_matrix[pred_cats.index("Other")][-2] += accu_cross_counts[key]
+    cf_matrix[pred_cats.index("Other")][-1] = pred_other_count - np.sum(cf_matrix[pred_cats.index("Other")])
+
+    norm_cf_matrix = normalize(cf_matrix, norm="l1")
+
+    fig, ax = plt.subplots(figsize=(16, 9))
+    # fig.tight_layout()
+    ax.xaxis.tick_top()  # x axis on top
+    ax.xaxis.set_label_position('top')
+
+    # WARNING! super hacky and only works if depth < 2
+    pred_cats_for_label = [c[1:-1].replace("-a", "\\").replace("-b", "/") if ("-a" in c or "-b" in c) else c for c in pred_cats]
+
+    # orig rec
+    #sns.heatmap(norm_cf_matrix, annot=True, fmt=".2f", cmap="YlGn", xticklabels=pred_cats, yticklabels=top_gold_cats,
+    # mod
+    #sns.heatmap(norm_cf_matrix, annot=True, fmt=".2f", cmap="YlGn", xticklabels=pred_cats_for_label, yticklabels=gold_cats,
+    #                  linewidths=.5, annot_kws={"fontsize":10, "fontname":"Arial"}, ax=ax, cbar=False)
+
+    # prec orig
+    #sns.heatmap(norm_cf_matrix, annot=True, fmt=".2f", cmap="OrRd", xticklabels=gold_cats, yticklabels=pred_cats,
+    # mod
+    sns.heatmap(norm_cf_matrix, annot=True, fmt=".2f", cmap="OrRd", xticklabels=gold_cats, yticklabels=pred_cats_for_label,
+                linewidths=.5, annot_kws={"fontsize": 10, "fontname": "Arial"}, ax=ax, cbar=False)
+
+    ax.xaxis.set_tick_params(rotation=-45)
+    ax.yaxis.set_tick_params(rotation=0)
+    # figure = ax.get_figure()
+    fig.savefig('output.png', dpi=150)
 
     return True
