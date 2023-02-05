@@ -180,7 +180,7 @@ def setup(eval_only=False):
     # training batch size for the pre training is 8 times larger than in eval
     train = preprocess.create_batches(
         train_data,
-        config["batch_size"],
+        config.getint("batch_size"),
         word_lexicon,
         char_lexicon,
         device=config["device"],
@@ -191,7 +191,7 @@ def setup(eval_only=False):
     if valid_data is not None:
         valid = preprocess.create_batches(
             valid_data,
-            config["batch_size"],
+            config.getint("batch_size"),
             word_lexicon,
             char_lexicon,
             eval=True,
