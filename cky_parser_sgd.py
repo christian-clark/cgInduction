@@ -130,6 +130,7 @@ class BatchCKYParser:
             #dot_temp_mat = torch.logsumexp(b[...,None]+c[...,None,:], dim=0)
             # dot_temp_mat[..., i, j] is score for left child i, right child j
 
+
             # dim: height x imax x batch_size x Qfunc x Qarg
             children_score_larg = torch.logsumexp(
                 b[...,None,:self.Qarg] + c[...,None], dim=0

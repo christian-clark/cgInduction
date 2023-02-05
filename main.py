@@ -181,12 +181,26 @@ def train():
     train_list = []
 
     # training batch size for the pre training is 8 times larger than in eval
-    train = preprocess.create_batches(train_data, opt.batch_size, word_lexicon, char_lexicon, opt=opt)
+    train = preprocess.create_batches(
+        train_data,
+        config.getint("batch_size"),
+        word_lexicon,
+        char_lexicon,
+        device=config["device"],
+    )
 
     logging.info('Evaluate every {0} epochs.'.format(opt.eval_steps))
 
     if valid_data is not None:
-        valid = preprocess.create_batches(valid_data, opt.batch_size, word_lexicon, char_lexicon, eval=True, opt=opt)
+        valid = preprocess.create_batches(
+            valid_data,
+            config.getint("batch_size"),
+            word_lexicon,
+            char_lexicon,
+            eval=True,
+            device=config["device"],
+            eval_device=config["eval_device"]
+        )
     else:
         valid = None
 

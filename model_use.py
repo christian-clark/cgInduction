@@ -38,6 +38,7 @@ def train_model(epoch, opt, model, optimizer, train):
     train_masks = [train_masks[l] for l in lst]
     train_indices = [train_indices[l] for l in lst]
 
+
     for w, c, var_c, lens, masks, indices in zip(train_w, train_c, train_var_c, train_lens, train_masks, train_indices):
         cnt += 1
         optimizer.zero_grad()
