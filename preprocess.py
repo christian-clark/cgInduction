@@ -185,9 +185,9 @@ def create_batches(x, batch_size, word2id, char2id, eval=False, perm=None, shuff
     korean_phonetics = opt.korean_phonetics
 
     lst = perm or list(range(len(x)))
-
     if shuffle:
         random.shuffle(lst)
+
     if sort:
         lst.sort(key=lambda l: -len(x[l]))
 
@@ -209,6 +209,7 @@ def create_batches(x, batch_size, word2id, char2id, eval=False, perm=None, shuff
                 end_id = sorted_index
             else:
                 end_id = None
+
             if (end_id is None and len(sorted_x[sorted_index]) == cur_len) or end_id is not None:
                 bw, bc, batch_var_c, blens, bmasks = create_one_batch(sorted_x[start_id: end_id], word2id, char2id, sort=sort,
                                                          device=device)
