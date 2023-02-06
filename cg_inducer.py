@@ -104,7 +104,7 @@ class BasicCGInducer(nn.Module):
             raise NotImplementedError()
             #all_cats = cat_trees_from_json(self.cats_json)
         else:
-            cats_by_max_depth, ix2cat = generate_categories(
+            cats_by_max_depth, ix2cat, ix2depth = generate_categories(
                 self.num_primitives,
                 self.max_func_depth,
                 self.max_arg_depth
@@ -169,6 +169,20 @@ class BasicCGInducer(nn.Module):
         self.num_res_cats = num_res_cats
         self.num_arg_cats = num_arg_cats
         self.ix2cat = ix2cat
+
+        print("CEC ix2depth: {}".format(ix2depth))
+        #ix2depth_res = torch.Tensor(ix2depth[:num_res_cats])
+        ix2depth_arg = torch.Tensor(ix2depth[:num_arg_cats])
+        PENALTY_SCALE = 1
+        # dim: Qres x 2Qarg
+        depth_penalty = ix2depth_arg.tile((num_res_cats, 2)) * -PENALTY_SCALE
+        #depth_penalty = ix2depth_res[:,None] + ix2depth_arg[None,:]
+        #depth_penalty = -PENALTY_SCALE * depth_penalty
+        # dim: Qres x 2Qarg
+        #depth_penalty = torch.tile(depth_penalty, (1, 2))
+        #print("CEC depth_penalty: {}".format(depth_penalty))
+
+        self.depth_penalty = depth_penalty.to(self.device)
         self.lfunc_ixs = lfunc_ixs.to(self.device)
         self.rfunc_ixs = rfunc_ixs.to(self.device)
         self.root_mask = can_be_root.to(self.device)
@@ -190,20 +204,26 @@ class BasicCGInducer(nn.Module):
             )
             full_p0 = root_scores
 
-            LARG_PENALTY = 100
-            larg_penalty = torch.full((num_res_cats, num_arg_cats), -LARG_PENALTY)
-            rarg_penalty = torch.full((num_res_cats, num_arg_cats), 0)
-            penalty = torch.concat([larg_penalty, rarg_penalty], dim=1).to(self.device)
-
+            #LARG_PENALTY = 100
+            #larg_penalty = torch.full((num_res_cats, num_arg_cats), -LARG_PENALTY)
+            #rarg_penalty = torch.full((num_res_cats, num_arg_cats), 0)
+            #penalty = torch.concat([larg_penalty, rarg_penalty], dim=1).to(self.device)
             # dim: Qres x 2Qarg
             # use this line to add a bias toward forward function application (i.e.
             # argument always on right)
             #rule_scores = F.log_softmax(self.rule_mlp(fake_emb)+penalty, dim=1)
-            rule_scores = F.log_softmax(self.rule_mlp(fake_emb), dim=1)
+
+            #rule_scores = F.log_softmax(self.rule_mlp(fake_emb), dim=1)
+
+            rule_scores = F.log_softmax(self.rule_mlp(fake_emb)+self.depth_penalty, dim=1)
             # dim: Qres x Qarg
             rule_scores_larg = rule_scores[:, :num_arg_cats]
+            #print("CEC rule scores larg")
+            #print(rule_scores_larg)
             # dim: Qres x Qarg
             rule_scores_rarg = rule_scores[:, num_arg_cats:]
+            #print("CEC rule scores rarg")
+            #print(rule_scores_rarg)
 
 
             nt_emb = self.nt_emb

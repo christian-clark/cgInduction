@@ -66,8 +66,10 @@ def generate_categories(num_primitives, max_depth, max_arg_depth=None):
     cs_dleq[-1] = {}
     cs_dleq[0] = {CGNode(str(p)) for p in range(num_primitives)}
     ix2cat = bidict.bidict()
+    ix2depth = list()
     for cat in cs_dleq[0]:
         ix2cat[len(ix2cat)] = cat
+        ix2depth.append(0)
 
     for i in range(max_depth):
         cs_dleqi = cs_dleq[i]
@@ -87,7 +89,8 @@ def generate_categories(num_primitives, max_depth, max_arg_depth=None):
         cs_dleq[i+1] = cs_dleq[i].union(cs_deqiplus1)
         for cat in cs_deqiplus1:
             ix2cat[len(ix2cat)] = cat
-    return cs_dleq, ix2cat
+            ix2depth.append(i+1)
+    return cs_dleq, ix2cat, ix2depth
 
 
 # TODO implement this and probably remove trees_from_json and
