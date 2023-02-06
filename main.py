@@ -34,7 +34,8 @@ DEFAULT_CONFIG = {
         "state_dim": 64,
         "eval_parsing": "yes",
         "eval_patient": 5,
-        "start_epoch": 0
+        "start_epoch": 0,
+        "labeled_eval": "yes"
     }
 }
 
@@ -279,7 +280,8 @@ def train():
         tree_fn, valid_pred_trees = postprocess.print_trees(
             trees, valid_data, -1, config["model_path"]
         )
-        eval_access(valid_pred_trees, valid_tree_list, model.writer, -1)
+        if config.getboolean("labeled_eval"):
+            eval_access(valid_pred_trees, valid_tree_list, model.writer, -1)
 
         # back to GPU for training
         model.to(config["device"])
@@ -307,7 +309,9 @@ def train():
                 tree_fn, valid_pred_trees = postprocess.print_trees(
                     trees, valid_data, epoch, config["model_path"]
                 )
-                eval_access(valid_pred_trees, valid_tree_list, model.writer, epoch)
+
+                if config.getboolean("labeled_eval"):
+                    eval_access(valid_pred_trees, valid_tree_list, model.writer, -1)
 
                 # back to GPU for training
                 model.to(config["device"])
