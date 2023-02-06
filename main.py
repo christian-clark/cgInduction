@@ -271,7 +271,7 @@ def train():
     patient = 0
 
     # evaluate the untrained model (written in log as epoch -1)
-    if config["eval_parsing"]:
+    if config.getboolean("eval_parsing"):
         # evaluate on CPU
         model.to(config["eval_device"])
         total_eval_likelihoods, trees = model_use.parse_dataset(model, valid, -1)
@@ -324,7 +324,7 @@ def train():
 
             else:
                 patient += 1
-                if patient >= config["eval_patient"]:
+                if patient >= config.getint("eval_patient"):
                     break
 
     model.writer.close()
