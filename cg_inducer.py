@@ -7,35 +7,20 @@ from cg_type import CGNode, generate_categories, trees_from_json
 
 
 class BasicCGInducer(nn.Module):
-    def __init__(
-            self,
-            config,
-            num_chars,
-            num_words
-        ):
-            #num_primitives=4,
-            #max_func_depth=2,
-            #max_arg_depth=None,
-            #cats_json=None,
-            #state_dim=64,
-            #num_chars=100,
-            #device='cpu',
-            #eval_device="cpu",
-            #model_type='char',
-            #num_words=100,
-            #rnn_hidden_dim=320
+    def __init__(self, config, num_chars, num_words):
         super(BasicCGInducer, self).__init__()
         self.state_dim = config.getint("state_dim")
         self.rnn_hidden_dim = config.getint("rnn_hidden_dim")
         self.model_type = config["model_type"]
         self.num_primitives = config.getint("num_primitives")
         self.max_func_depth = config.getint("max_func_depth")
-        self.max_arg_depth = self.max_func_depth - 1
-        if "max_arg_depth" in config:
-            self.max_arg_depth = config.getint("max_arg_depth")
-        self.cats_json = None
-        if "cats_json" in config:
-            self.cats_json = config["cats_json"]
+        self.max_arg_depth = config.getint(
+            "max_arg_depth", fallback=self.max_func_depth-1
+        )
+        self.arg_depth_penalty = config.getfloat(
+            "arg_depth_penalty", fallback=None
+        )
+        self.cats_json = config.get("cats_json", fallback=None)
         self.device = config["device"]
         self.eval_device = config["eval_device"]
 
@@ -170,19 +155,19 @@ class BasicCGInducer(nn.Module):
         self.num_arg_cats = num_arg_cats
         self.ix2cat = ix2cat
 
-        print("CEC ix2depth: {}".format(ix2depth))
-        #ix2depth_res = torch.Tensor(ix2depth[:num_res_cats])
-        ix2depth_arg = torch.Tensor(ix2depth[:num_arg_cats])
-        PENALTY_SCALE = 1
-        # dim: Qres x 2Qarg
-        depth_penalty = ix2depth_arg.tile((num_res_cats, 2)) * -PENALTY_SCALE
-        #depth_penalty = ix2depth_res[:,None] + ix2depth_arg[None,:]
-        #depth_penalty = -PENALTY_SCALE * depth_penalty
-        # dim: Qres x 2Qarg
-        #depth_penalty = torch.tile(depth_penalty, (1, 2))
-        #print("CEC depth_penalty: {}".format(depth_penalty))
+        if self.arg_depth_penalty:
+            print("CEC ix2depth: {}".format(ix2depth))
+            #ix2depth_res = torch.Tensor(ix2depth[:num_res_cats])
+            ix2depth_arg = torch.Tensor(ix2depth[:num_arg_cats])
+            # dim: Qres x 2Qarg
+            arg_penalty_mat = -self.arg_depth_penalty \
+                * ix2depth_arg.tile((num_res_cats, 2))
+            #depth_penalty = ix2depth_res[:,None] + ix2depth_arg[None,:]
+            #depth_penalty = -PENALTY_SCALE * depth_penalty
+            # dim: Qres x 2Qarg
+            #depth_penalty = torch.tile(depth_penalty, (1, 2))
+            self.arg_penalty_mat = arg_penalty_mat.to(self.device)
 
-        self.depth_penalty = depth_penalty.to(self.device)
         self.lfunc_ixs = lfunc_ixs.to(self.device)
         self.rfunc_ixs = rfunc_ixs.to(self.device)
         self.root_mask = can_be_root.to(self.device)
@@ -215,7 +200,14 @@ class BasicCGInducer(nn.Module):
 
             #rule_scores = F.log_softmax(self.rule_mlp(fake_emb), dim=1)
 
-            rule_scores = F.log_softmax(self.rule_mlp(fake_emb)+self.depth_penalty, dim=1)
+            # dim: Qres x 2Qarg
+            mlp_out = self.rule_mlp(fake_emb)
+            if self.arg_depth_penalty:
+                mlp_out += self.arg_penalty_mat
+
+            # dim: Qres x 2Qarg
+            rule_scores = F.log_softmax(mlp_out, dim=1)
+            #rule_scores = F.log_softmax(self.rule_mlp(fake_emb)+self.depth_penalty, dim=1)
             # dim: Qres x Qarg
             rule_scores_larg = rule_scores[:, :num_arg_cats]
             #print("CEC rule scores larg")
