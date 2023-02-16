@@ -15,4 +15,4 @@ def print_trees(trees, original_sents, epoch, model_path):
                 tree[position] = word
             print(str(index)+'#!#!'+tree.pformat(margin=10000), file=ofh)
             reconstituted_trees.append(tree)
-    return tree_filename, reconstituted_trees
+    return reconstituted_trees

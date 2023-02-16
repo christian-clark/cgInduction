@@ -111,6 +111,7 @@ def parse_dataset(model, dataset, epoch, section='dev'):
     model.train()
     return total_structure_loss, trees
 
+
 def likelihood_dataset(model, dataset, epoch, section='dev'):
     model.eval()
     with torch.no_grad():

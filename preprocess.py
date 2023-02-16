@@ -15,19 +15,19 @@ LRB = '-LRB-'
 RRB = '-RRB-'
 
 
-def divide(data, valid_size, gold_tree_list, include_valid_in_train=False, all_train_as_valid=False):
-    logging.info('include valid in train is {}; all train as valid is {}'.format(include_valid_in_train, all_train_as_valid))
-    assert len(data) == len(gold_tree_list)
-    valid_size = min(valid_size, len(data) // 10)
-    train_size = len(data) - valid_size
-    if include_valid_in_train:
-        return data, data[train_size:], gold_tree_list, gold_tree_list[train_size:]
-    elif all_train_as_valid:
-        return data, data, gold_tree_list, gold_tree_list
-    return data[:train_size], data[train_size:], gold_tree_list[:train_size], gold_tree_list[train_size:]
+#def divide(data, valid_size, gold_tree_list, include_valid_in_train=False, all_train_as_valid=False):
+#    logging.info('include valid in train is {}; all train as valid is {}'.format(include_valid_in_train, all_train_as_valid))
+#    assert len(data) == len(gold_tree_list)
+#    valid_size = min(valid_size, len(data) // 10)
+#    train_size = len(data) - valid_size
+#    if include_valid_in_train:
+#        return data, data[train_size:], gold_tree_list, gold_tree_list[train_size:]
+#    elif all_train_as_valid:
+#        return data, data, gold_tree_list, gold_tree_list
+#    return data[:train_size], data[train_size:], gold_tree_list[:train_size], gold_tree_list[train_size:]
+
 
 def get_truncated_vocab(dataset, min_count, max_num):
-
     word_count = Counter()
     for sentence in dataset:
         word_count.update(sentence)
@@ -49,6 +49,7 @@ def get_truncated_vocab(dataset, min_count, max_num):
     logging.info('Original vocabulary size: {}. Truncated vocab size {}.'.format(len(word_count), i))
     return word_count[:i]
 
+
 def break_sentence_with_eos(sentence):
     """
      break sentences with EOS signs to replace break_sentence where it is broken like
@@ -63,6 +64,7 @@ def break_sentence_with_eos(sentence):
             ret.append(sentence[start_index:end_index])
             start_index = end_index
     return ret
+
 
 def read_corpus(path, korean_phonetics=False):
     """
@@ -99,7 +101,6 @@ def read_corpus(path, korean_phonetics=False):
 
 
 def create_one_batch(x, word2id, char2id, oov=OOV, pad=PAD, sort=True, device='cpu'):
-
     batch_size = len(x)
     lst = list(range(batch_size))
     if sort:

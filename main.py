@@ -32,10 +32,8 @@ DEFAULT_CONFIG = {
         "model_type": "word",
         "rnn_hidden_dim": 512,
         "state_dim": 64,
-        "eval_parsing": "yes",
         "eval_patient": 5,
         "start_epoch": 0,
-        "labeled_eval": "yes"
     }
 }
 
@@ -51,11 +49,7 @@ def random_seed(seed_value, use_cuda):
 
 def setup(eval_only=False):
     top_config = ConfigParser()
-    # sys.argv[2] (ini file) overrides DEFAULT_CONFIG, and 
-    # sys.argv[3:] (command-line args)  overrides sys.argv[2]
-    # TODO make it possible to not provide INI file
     top_config.read_dict(DEFAULT_CONFIG)
-
     if len(sys.argv) == 2:
         overrides = []
     elif len(sys.argv[2].split("=")) == 1:
@@ -63,7 +57,6 @@ def setup(eval_only=False):
         overrides = sys.argv[3:]
     else:
         overrides = sys.argv[2:]
-
     config = top_config["DEFAULT"]
 
     # any args after the config file override key-value pairs
@@ -120,24 +113,38 @@ def setup(eval_only=False):
         or config["device"] == "cpu"
 
     # TODO may want to read in the koren phonetics arg from config
-    train_data = preprocess.read_corpus(config["train_path"])
+    train_sents = preprocess.read_corpus(config["train_sents"])
 
-    logging.info('training instance: {}, training tokens: {}.'.format(len(train_data),
-                                                                      sum([len(s) - 1 for s in train_data])))
+    logging.info('training instance: {}, training tokens: {}.'.format(
+        len(train_sents), sum([len(s) - 1 for s in train_sents])
+    ))
 
-    with open(config["train_gold_path"]) as tfh:
-        train_tree_list = [x.strip() for x in tfh]
+    #with open(config["train_gold_path"]) as tfh:
+    #    train_tree_list = [x.strip() for x in tfh]
 
-    train_data, valid_data, train_tree_list, valid_tree_list = preprocess.divide(
-        train_data,
-        int(config["valid_size"]),
-        train_tree_list,
-        include_valid_in_train=False,
-        all_train_as_valid=True
-    ) # INCLUDE VALID IN TRAIN TO REDUCE TIME
+    #train_data, valid_data, train_tree_list, valid_tree_list = preprocess.divide(
+    #    train_data,
+    #    int(config["valid_size"]),
+    #    train_tree_list,
+    #    include_valid_in_train=False,
+    #    all_train_as_valid=True
+    #) # INCLUDE VALID IN TRAIN TO REDUCE TIME
 
-    logging.info('training instance: {}, training tokens after division: {}.'.format(len(train_data), sum([len(s) - 1 for s in train_data])))
-    logging.info('valid instance: {}, valid tokens: {}.'.format(len(valid_data), sum([len(s) - 1 for s in valid_data])))
+    valid_sents_path = config.get("valid_sents", fallback=None)
+    if valid_sents_path is None:
+        valid_sents = None
+    else:
+        valid_sents = preprocess.read_corpus(valid_sents_path)
+
+    valid_trees_path = config.get("valid_trees", fallback=None)
+    if valid_trees_path is None:
+        valid_trees = None
+    else:
+        with open(valid_trees_path) as f:
+            valid_trees = [t.strip() for t in f]
+
+    logging.info('training instance: {}, training tokens after division: {}.'.format(len(train_sents), sum([len(s) - 1 for s in train_sents])))
+    logging.info('valid instance: {}, valid tokens: {}.'.format(len(valid_sents), sum([len(s) - 1 for s in valid_sents])))
 
     word_lexicon = bidict.bidict()
 
@@ -145,7 +152,7 @@ def setup(eval_only=False):
     # NOTE: min count of 1 is currently hard-coded
     logging.warning('enforcing minimum count of 1')
     vocab = preprocess.get_truncated_vocab(
-        train_data, 1, config.getint("max_vocab_size")
+        train_sents, 1, config.getint("max_vocab_size")
     )
 
     # Ensure index of '<oov>' is 0
@@ -165,7 +172,7 @@ def setup(eval_only=False):
     # Character Lexicon
     char_lexicon = bidict.bidict()
 
-    for sentence in train_data:
+    for sentence in train_sents:
         for word in sentence:
             for ch in word:
                 if ch not in char_lexicon:
@@ -180,7 +187,7 @@ def setup(eval_only=False):
 
     # training batch size for the pre training is 8 times larger than in eval
     train = preprocess.create_batches(
-        train_data,
+        train_sents,
         config.getint("batch_size"),
         word_lexicon,
         char_lexicon,
@@ -189,9 +196,9 @@ def setup(eval_only=False):
 
     logging.info('Evaluate every {0} epochs.'.format(config["eval_steps"]))
 
-    if valid_data is not None:
+    if valid_sents is not None:
         valid = preprocess.create_batches(
-            valid_data,
+            valid_sents,
             config.getint("batch_size"),
             word_lexicon,
             char_lexicon,
@@ -209,15 +216,6 @@ def setup(eval_only=False):
         num_chars=len(char_lexicon),
         num_words=len(word_lexicon)
     )
-        #num_primitives=config["num_primitives"],
-        #max_func_depth=config["max_func_depth"],
-        #max_arg_depth=config["max_arg_depth"],
-        #cats_json=config["cats_json"],
-        #device=config["device"],
-        #eval_device=config["eval_device"],
-        #model_type=config["model_type"],
-        #state_dim=config["state_dim"],
-        #rnn_hidden_dim=config["rnn_hidden_dim"]
 
 
     logging.info(
@@ -262,32 +260,40 @@ def setup(eval_only=False):
         # model.pth
         checkpoint = torch.load(config["model_path"] + "/model.pth")
 
-    return config, model, optimizer, valid_data, valid_tree_list, valid, train, logfile_fh
+    return config, model, optimizer, valid_sents, valid_trees, valid, train, logfile_fh
 
 
 def train():
-    config, model, optimizer, valid_data, valid_tree_list, valid, train, logfile_fh = setup(eval_only=False)
+    config, model, optimizer, valid_sents, valid_trees, valid, train, logfile_fh = setup(eval_only=False)
     torch.autograd.set_detect_anomaly(True)
     best_eval_likelihood = -1e+8
     patient = 0
 
     # evaluate the untrained model (written in log as epoch -1)
-    if config.getboolean("eval_parsing"):
-        # evaluate on CPU
+    if valid_sents is not None:
         model.to(config["eval_device"])
-        total_eval_likelihoods, trees = model_use.parse_dataset(model, valid, -1)
-
-        tree_fn, valid_pred_trees = postprocess.print_trees(
-            trees, valid_data, -1, config["model_path"]
+        _, trees = model_use.parse_dataset(model, valid, -1)
+        valid_pred_trees = postprocess.print_trees(
+            trees, valid_sents, -1, config["model_path"]
         )
-        if config.getboolean("labeled_eval"):
-            eval_access(valid_pred_trees, valid_tree_list, model.writer, -1)
-
-        # back to GPU for training
+        if valid_trees is not None:
+            eval_access(valid_pred_trees, valid_trees, model.writer, -1)
         model.to(config["device"])
-
-    else:
-        total_eval_likelihoods = model_use.likelihood_dataset(model, valid, -1) * (-1)
+        
+#    # evaluate the untrained model (written in log as epoch -1)
+#    if config.getboolean("eval_parsing"):
+#        # evaluate on CPU
+#        model.to(config["eval_device"])
+#        total_eval_likelihoods, trees = model_use.parse_dataset(model, valid, -1)
+#
+#        valid_pred_trees = postprocess.print_trees(
+#            trees, valid_data, -1, config["model_path"]
+#        )
+#        if config.getboolean("labeled_eval"):
+#            eval_access(valid_pred_trees, valid_trees, model.writer, -1)
+#
+#        # back to GPU for training
+#        model.to(config["device"])
 
     for epoch in range(config.getint("start_epoch"), config.getint("max_epoch")):
         optimizer = model_use.train_model(
@@ -300,24 +306,35 @@ def train():
             and epoch >= config.getint("eval_start_epoch"):
 
             logging.info("EVALING.")
-            if config.getboolean("eval_parsing"):
-                # evaluate on CPU
+
+            if valid_sents is not None:
                 model.to(config["eval_device"])
-
                 total_eval_likelihoods, trees = model_use.parse_dataset(model, valid, epoch)
-
-                tree_fn, valid_pred_trees = postprocess.print_trees(
-                    trees, valid_data, epoch, config["model_path"]
+                valid_pred_trees = postprocess.print_trees(
+                    trees, valid_sents, epoch, config["model_path"]
                 )
-
-                if config.getboolean("labeled_eval"):
-                    eval_access(valid_pred_trees, valid_tree_list, model.writer, -1)
-
-                # back to GPU for training
+                if valid_trees is not None:
+                    eval_access(valid_pred_trees, valid_trees, model.writer, -1)
                 model.to(config["device"])
 
+#            if config.getboolean("eval_parsing"):
+#                # evaluate on CPU
+#                model.to(config["eval_device"])
+#
+#                total_eval_likelihoods, trees = model_use.parse_dataset(model, valid, epoch)
+#
+#                valid_pred_trees = postprocess.print_trees(
+#                    trees, valid_data, epoch, config["model_path"]
+#                )
+#
+#                if config.getboolean("labeled_eval"):
+#                    eval_access(valid_pred_trees, valid_trees, model.writer, -1)
+#
+#                # back to GPU for training
+#                model.to(config["device"])
+
             else:
-                total_eval_likelihoods = model_use.likelihood_dataset(model, valid, epoch) * (-1)
+                total_eval_likelihoods = model_use.likelihood_dataset(model, train, epoch) * (-1)
 
             if total_eval_likelihoods > best_eval_likelihood:
                 logging.info("Better model found based on likelihood: {}! vs {}".format(total_eval_likelihoods, best_eval_likelihood))
@@ -335,15 +352,16 @@ def train():
     logfile_fh.close()
 
 
+
 def test():
-    config, model, _, valid_data, valid_tree_list, valid, _, logfile_fh = setup(eval_only=True)
+    config, model, _, valid_sents, valid_trees, valid, _, logfile_fh = setup(eval_only=True)
     logging.info('EVALING.')
     model.to(config["eval_device"])
     _, trees = model_use.parse_dataset(model, valid, 0)
-    tree_fn, valid_pred_trees = postprocess.print_trees(
-        trees, valid_data, 0, config["model_path"]
+    valid_pred_trees = postprocess.print_trees(
+        trees, valid_sents, 0, config["model_path"]
     )
-    eval_access(valid_pred_trees, valid_tree_list, model.writer, 0)
+    eval_access(valid_pred_trees, valid_trees, model.writer, 0)
     #model.to(config["device"])
     model.writer.close()
     logfile_fh.close()
