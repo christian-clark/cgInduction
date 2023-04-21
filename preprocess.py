@@ -14,6 +14,13 @@ EOW = '<eow>'
 LRB = '-LRB-'
 RRB = '-RRB-'
 
+DEBUG = True
+
+def dprint(*args, **kwargs):
+    if DEBUG: 
+        print("DEBUG: ", end="")
+        print(*args, **kwargs)
+
 
 #def divide(data, valid_size, gold_tree_list, include_valid_in_train=False, all_train_as_valid=False):
 #    logging.info('include valid in train is {}; all train as valid is {}'.format(include_valid_in_train, all_train_as_valid))
@@ -100,13 +107,14 @@ def read_corpus(path, korean_phonetics=False):
     return dataset
 
 
-def create_one_batch(x, word2id, char2id, oov=OOV, pad=PAD, sort=True, device='cpu'):
+def create_one_batch(x, x_pos, word2id, char2id, oov=OOV, pad=PAD, sort=True, device='cpu'):
     batch_size = len(x)
     lst = list(range(batch_size))
     if sort:
         lst.sort(key=lambda l: -len(x[l]))
 
     x = [x[i] for i in lst]
+    x_pos = [x_pos[i] for i in lst]
     lens = [len(x[i]) for i in lst]
     max_len = max(lens)
 
@@ -119,6 +127,18 @@ def create_one_batch(x, word2id, char2id, oov=OOV, pad=PAD, sort=True, device='c
                 batch_w[i][j] = word2id.get(x_ij, oov_id)
     else:
         batch_w = None
+
+    # batch_pos[i][j] is 0 for non-noun, 1 for noun
+    batch_pos = torch.zeros(batch_size, max_len, dtype=torch.int64).to(device)
+    for i, x_pos_i in enumerate(x_pos):
+        for j, x_pos_ij in enumerate(x_pos_i):
+            # include pronouns?
+            # TODO make this configurable
+            #NOUN_TAGS = ["nn", "nns", "nnp", "nnps"]
+            #NOUN_TAGS = ["nn", "nns"]
+            NOUN_TAGS = ["np"]
+            if x_pos_ij in NOUN_TAGS:
+                batch_pos[i][j] = 1
 
     if char2id is not None:
         bow_id, eow_id, oov_id, pad_id = char2id.get(BOW, None), char2id.get(EOW, None), char2id.get(oov, None), char2id.get(pad, None)
@@ -172,15 +192,19 @@ def create_one_batch(x, word2id, char2id, oov=OOV, pad=PAD, sort=True, device='c
     masks[1] = torch.LongTensor(masks[1]).to(device)
     masks[2] = torch.LongTensor(masks[2]).to(device)
 
-    return batch_w, batch_c, batch_var_c, lens, masks
+    return batch_w, batch_pos, batch_c, batch_var_c, lens, masks
 
 
 # shuffle training examples and create mini-batches
 def create_batches(
-        x, batch_size, word2id, char2id, eval=False, perm=None, 
+        x, x_pos, batch_size, word2id, char2id, eval=False, perm=None, 
         shuffle=True, sort=True, device="cpu", eval_device="cpu"
     ):
+    # x: list of sentences, each starting with BOS and ending with EOS
+    # x_pos: list of pos tag sequences for each sentence, 
+    #     each starting with BOS and ending with EOS
 
+    assert len(x) == len(x_pos)
     if eval:
         device = eval_device
 
@@ -192,9 +216,10 @@ def create_batches(
         lst.sort(key=lambda l: -len(x[l]))
 
     sorted_x = [x[i] for i in lst]
+    sorted_x_pos = [x_pos[i] for i in lst]
 
     sum_len = 0.0
-    batches_w, batches_c, batches_var_c, batches_lens, batches_masks, batch_indices = [], [], [], [], [], []
+    batches_w, batches_pos, batches_c, batches_var_c, batches_lens, batches_masks, batch_indices = [], [], [], [], [], [], []
     size = batch_size
     cur_len = 0
     start_id = 0
@@ -204,6 +229,9 @@ def create_batches(
             cur_len = len(sorted_x[sorted_index])
             if len(sorted_x) > 1:
                 continue
+        # by default move ahead to the next sentence. if one of these
+        # conditions applies though, the current sentence will be
+        # the last one in the batch
         if cur_len != len(sorted_x[sorted_index]) or sorted_index - start_id == batch_size or sorted_index == len(sorted_x)-1:
             if sorted_index != len(sorted_x) - 1:
                 end_id = sorted_index
@@ -211,11 +239,14 @@ def create_batches(
                 end_id = None
 
             if (end_id is None and len(sorted_x[sorted_index]) == cur_len) or end_id is not None:
-                bw, bc, batch_var_c, blens, bmasks = create_one_batch(sorted_x[start_id: end_id], word2id, char2id, sort=sort,
-                                                         device=device)
+                bw, bpos, bc, batch_var_c, blens, bmasks = create_one_batch(
+                    sorted_x[start_id:end_id], sorted_x_pos[start_id:end_id],
+                    word2id, char2id, sort=sort, device=device
+                )
                 batch_indices.append(lst[start_id:end_id])
                 sum_len += sum(blens)
                 batches_w.append(bw)
+                batches_pos.append(bpos)
                 batches_c.append(bc)
                 batches_var_c.append(batch_var_c)
                 batches_lens.append(blens)
@@ -224,21 +255,28 @@ def create_batches(
                 cur_len = len(sorted_x[sorted_index])
             else:
                 end_id = sorted_index
-                bw, bc, batch_var_c, blens, bmasks = create_one_batch(sorted_x[start_id: end_id], word2id, char2id, sort=sort,
-                                                         device=device)
+                bw, bpos, bc, batch_var_c, blens, bmasks = create_one_batch(
+                    sorted_x[start_id:end_id], sorted_x_pos[start_id:end_id],
+                    word2id, char2id, sort=sort, device=device
+                )
                 batch_indices.append(lst[start_id:end_id])
                 sum_len += sum(blens)
                 batches_w.append(bw)
+                batches_pos.append(bpos)
                 batches_c.append(bc)
                 batches_var_c.append(batch_var_c)
                 batches_lens.append(blens)
                 batches_masks.append(bmasks)
 
-                bw, bc, batch_var_c, blens, bmasks = create_one_batch(sorted_x[-1:], word2id, char2id, sort=sort,
-                                                         device=device)
+                # final sentence is its own batch
+                bw, bpos, bc, batch_var_c, blens, bmasks = create_one_batch(
+                    sorted_x[-1:], sorted_x_pos[-1:],
+                    word2id, char2id, sort=sort, device=device
+                )
                 batch_indices.append(lst[-1:])
                 sum_len += sum(blens)
                 batches_w.append(bw)
+                batches_pos.append(bpos)
                 batches_c.append(bc)
                 batches_var_c.append(batch_var_c)
                 batches_lens.append(blens)
@@ -253,13 +291,14 @@ def create_batches(
         perm = list(range(nbatch))
     random.shuffle(perm)
     batches_w = [batches_w[i] for i in perm]
+    batches_pos = [batches_pos[i] for i in perm]
     batches_c = [batches_c[i] for i in perm]
     batches_var_c = [batches_var_c[i] for i in perm]
     batches_lens = [batches_lens[i] for i in perm]
     batches_masks = [batches_masks[i] for i in perm]
     batch_indices = [batch_indices[i] for i in perm]
 
-    return batches_w, batches_c, batches_var_c, batches_lens, batches_masks, batch_indices
+    return batches_w, batches_pos, batches_c, batches_var_c, batches_lens, batches_masks, batch_indices
 
 
 def read_markers(fname):

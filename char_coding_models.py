@@ -1,6 +1,39 @@
-import torch
-import torch.nn as nn
+import torch, torch.nn as nn, numpy as np
 from torch.nn import functional as F
+
+DEBUG = True
+
+def dprint(*args, **kwargs):
+    if DEBUG: 
+        print("DEBUG: ", end="")
+        print(*args, **kwargs)
+
+
+# TODO
+# - device should get passed in from config
+# - bias should also be configurable
+def get_fixed_noun_category_mask(pos_indices, num_cats, device, bias=1000.):
+    """Creates a masking matrix that biases the model to assign a
+    predetermined category to nouns. Assumes that the category with index 0
+    is the predetermined category.
+
+    pos_indices is a matrix of dimension num_sents x num_words, where
+    pos_indices[i, j] is a 0 or 1 indicating whether word j of sentence
+    i is a noun."""
+    
+    num_sents = pos_indices.shape[0]
+    num_words = pos_indices.shape[1]
+    mask_vals = torch.Tensor([0, -bias]).to(device)
+    mask_vals = mask_vals.tile(num_sents, 1)
+    # this part of the mask blocks out non-noun categories for noun words
+    # noun category is cat with index 0
+    # sent x words x num_cats-1
+    mask_non_noun_cat = torch.gather(mask_vals, 1, pos_indices).unsqueeze(dim=-1).expand(-1, -1, num_cats-1)
+    # and this part of the mask is for not blocking the noun category
+    mask_noun_cat = torch.zeros([num_sents, num_words, 1]).to("cuda")
+    mask = torch.cat((mask_noun_cat, mask_non_noun_cat), dim=2)
+    return mask
+    
 
 
 class ResidualLayer(nn.Module): # from kim
@@ -32,7 +65,8 @@ class CharProbRNN(nn.Module):
 
         torch.nn.init.kaiming_normal_(self.char_embs.weight.data)
 
-    def forward(self, chars, cat_embs, set_grammar=True): # does not use set pcfg
+    def forward(self, chars, pos, cat_embs, set_grammar=True): # does not use set pcfg
+        # TODO noun mask here
         char_embs, cat_embs = self.prep_input(chars, cat_embs)
         Hs = []
         lens = 0
@@ -72,7 +106,39 @@ class CharProbRNN(nn.Module):
         total_logprobs = torch.stack(total_logprobs, dim=0) # batch, cats
         total_logprobs = total_logprobs.reshape(len(chars), -1, total_logprobs.shape[1]) # sentbatch, wordbatch, cats
         # total_logprobs = total_logprobs.transpose(0, 1) # wordbatch, sentbatch, cats
-        return total_logprobs
+
+#        # mask to fix noun category
+#        # TODO simplify this and combine with word-level equivalent
+#
+#        num_sents = pos_indices.shape[0]
+#        dprint("num sents", num_sents)
+#        num_words = pos_indices.shape[1]
+#        dprint("num words", num_words)
+#        #QUASI_INF = 10000000.
+#        # TODO make this a parameter in the configuration
+#        NOUN_BIAS = 1000.
+#        #mask_vals = torch.Tensor([0, -np.inf])
+#        #mask_vals = torch.Tensor([0, -QUASI_INF])
+#        # TODO un-hardcode this
+#        mask_vals = torch.Tensor([0, -NOUN_BIAS]).to("cuda")
+#        mask_vals = mask_vals.tile(num_sents, 1)
+#        # this part of the mask blocks out non-noun categories for noun
+#        # words
+#        # noun category is cat with index 0
+#        # sent x words x num_cats-1
+#        mask = torch.gather(mask_vals, 1, pos_indices).unsqueeze(dim=-1).expand(-1, -1, num_cats-1)
+#        # and this part of the mask is for not blocking the noun category
+#        mask_noun_cat = torch.zeros([num_sents, num_words, 1]).to("cuda")
+#        mask = torch.cat((mask_noun_cat, mask), dim=2)
+
+        num_cats = total_logprobs.shape[2]
+        pos_indices = pos[:, 1:-1]
+        mask = get_fixed_noun_category_mask(pos_indices, num_cats, "cuda")
+
+        masked_logprobs = total_logprobs + mask
+
+        #return total_logprobs
+        return masked_logprobs
 
     def prep_input(self, chars, cat_embs):
         # cat_embs is num_cat, cat_dim
@@ -95,14 +161,44 @@ class WordProbFCFixVocabCompound(nn.Module):
                                        ResidualLayer(state_dim, state_dim),
                                        nn.Linear(state_dim, num_words))
 
-    def forward(self, words, cat_embs, set_grammar=True):
+    def forward(self, words, pos, cat_embs, set_grammar=True):
         if set_grammar:
-            dist = nn.functional.log_softmax(self.fc(cat_embs), 1).t() # vocab, cats
+            dist = nn.functional.log_softmax(self.fc(cat_embs), 1).t() # vocab x cats
             self.dist = dist
         else:
             pass
-        word_indices = words[:, 1:-1]
+#        word_indices = words[:, 1:-1]
+#        # each pos_indices[i, j] is 1 if word j of sentence i is a noun, 0 otherwise
+#        pos_indices = pos[:, 1:-1]
+#
+#        num_sents = pos_indices.shape[0]
+#        num_words = pos_indices.shape[1]
+#        num_cats = self.dist.shape[1]
+#        #QUASI_INF = 10000000.
+#        # TODO make this a parameter in the configuration
+#        NOUN_BIAS = 1000.
+#        #mask_vals = torch.Tensor([0, -np.inf])
+#        #mask_vals = torch.Tensor([0, -QUASI_INF])
+#        # TODO un-hardcode this
+#        mask_vals = torch.Tensor([0, -NOUN_BIAS]).to("cuda")
+#        mask_vals = mask_vals.tile(num_sents, 1)
+#        # this part of the mask blocks out non-noun categories for noun
+#        # words
+#        # noun category is cat with index 0
+#        # sent x words x num_cats-1
+#        mask = torch.gather(mask_vals, 1, pos_indices).unsqueeze(dim=-1).expand(-1, -1, num_cats-1)
+#        # and this part of the mask is for not blocking the noun category
+#        mask_noun_cat = torch.zeros([num_sents, num_words, 1]).to("cuda")
+#        mask = torch.cat((mask_noun_cat, mask), dim=2)
 
+        word_indices = words[:, 1:-1]
         logprobs = self.dist[word_indices, :] # sent, word, cats; get rid of bos and eos
-        return logprobs
+
+        pos_indices = pos[:, 1:-1]
+        num_cats = self.dist.shape[1]
+        mask = get_fixed_noun_category_mask(pos_indices, num_cats, "cuda")
+
+        masked_logprobs = logprobs + mask
+        #return logprobs
+        return masked_logprobs
 
