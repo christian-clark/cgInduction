@@ -11,6 +11,14 @@ def printDebug(*args, **kwargs):
         print(*args, **kwargs)
 
 
+DEBUG = True
+
+def dprint(*args, **kwargs):
+    if DEBUG: 
+        print("DEBUG: ", end="")
+        print(*args, **kwargs)
+
+
 class TopModel(nn.Module):
     def __init__(self, inducer, writer:SummaryWriter=None):
         super(TopModel, self).__init__()
@@ -18,12 +26,12 @@ class TopModel(nn.Module):
         self.writer = writer
 
 
-    def forward(self, word_inp, chars_var_inp, distance_penalty_weight=0.):
+    def forward(self, word_inp, pos_inp, chars_var_inp, distance_penalty_weight=0.):
         if self.inducer.model_type == "char":
-            logprob_list = self.inducer.forward(chars_var_inp, words=word_inp)
+            logprob_list = self.inducer.forward(chars_var_inp, pos_inp, words=word_inp)
         else:
             assert self.inducer.model_type == 'word'
-            logprob_list = self.inducer.forward(word_inp)
+            logprob_list = self.inducer.forward(word_inp, pos_inp)
 
         total_num_chars = sum(
             [sum([x.numel() for x in y]) for y in chars_var_inp]
@@ -34,10 +42,11 @@ class TopModel(nn.Module):
         return total_loss
 
 
-    def parse(self, word_inp, chars_var_inp, indices, eval=False, set_grammar=True):
+    def parse(self, word_inp, pos_inp, chars_var_inp, indices, eval=False, set_grammar=True):
         if self.inducer.model_type == 'char':
             structure_loss, vtree_list, _, _ = self.inducer.forward(
                 chars_var_inp,
+                pos_inp,
                 eval,
                 argmax=True,
                 indices=indices,
@@ -48,6 +57,7 @@ class TopModel(nn.Module):
             printDebug("word input: {}".format(word_inp))
             structure_loss, vtree_list, _, _ = self.inducer.forward(
                 word_inp,
+                pos_inp,
                 eval,
                 argmax=True,
                 indices=indices,
@@ -56,10 +66,11 @@ class TopModel(nn.Module):
         return structure_loss.sum().item(), vtree_list
 
 
-    def likelihood(self, word_inp, chars_var_inp, indices, set_grammar=True):
+    def likelihood(self, word_inp, pos_inp, chars_var_inp, indices, set_grammar=True):
         if self.inducer.model_type == 'char':
             structure_loss = self.inducer.forward(
                 chars_var_inp,
+                pos_inp,
                 argmax=False,
                 indices=indices,
                 set_grammar=set_grammar
@@ -68,6 +79,7 @@ class TopModel(nn.Module):
             assert self.inducer.model_type == 'word'
             structure_loss = self.inducer.forward(
                 word_inp,
+                pos_inp,
                 argmax=False,
                 indices=indices,
                 set_grammar=set_grammar

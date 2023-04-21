@@ -125,6 +125,8 @@ def setup(eval_only=False):
     # TODO may want to read in the koren phonetics arg from config
     train_sents = preprocess.read_corpus(config["train_sents"])
 
+    train_pos = preprocess.read_corpus(config["train_pos"])
+
     logging.info('training instance: {}, training tokens: {}.'.format(
         len(train_sents), sum([len(s) - 1 for s in train_sents])
     ))
@@ -143,8 +145,10 @@ def setup(eval_only=False):
     valid_sents_path = config.get("valid_sents", fallback=None)
     if valid_sents_path is None:
         valid_sents = None
+        valid_pos = None
     else:
         valid_sents = preprocess.read_corpus(valid_sents_path)
+        valid_pos = preprocess.read_corpus(config["valid_pos"])
 
     valid_trees_path = config.get("valid_trees", fallback=None)
     if valid_trees_path is None:
@@ -194,10 +198,10 @@ def setup(eval_only=False):
 
     logging.info('Char embedding size: {0}'.format(len(char_lexicon)))
 
-
     # training batch size for the pre training is 8 times larger than in eval
     train = preprocess.create_batches(
         train_sents,
+        train_pos,
         config.getint("batch_size"),
         word_lexicon,
         char_lexicon,
@@ -209,6 +213,7 @@ def setup(eval_only=False):
     if valid_sents is not None:
         valid = preprocess.create_batches(
             valid_sents,
+            valid_pos,
             config.getint("batch_size"),
             word_lexicon,
             char_lexicon,

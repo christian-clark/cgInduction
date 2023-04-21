@@ -15,6 +15,14 @@ def printDebug(*args, **kwargs):
         print(*args, **kwargs)
 
 
+DEBUG = True
+
+def dprint(*args, **kwargs):
+    if DEBUG: 
+        print("DEBUG: ", end="")
+        print(*args, **kwargs)
+
+
 class BasicCGInducer(nn.Module):
     def __init__(self, config, num_chars, num_words):
         super(BasicCGInducer, self).__init__()
@@ -281,7 +289,7 @@ class BasicCGInducer(nn.Module):
         self.root_mask = can_be_root.to(self.device)
 
         
-    def forward(self, x, eval=False, argmax=False, use_mean=False, indices=None, set_grammar=True, return_ll=True, **kwargs):
+    def forward(self, x, pos, eval=False, argmax=False, use_mean=False, indices=None, set_grammar=True, return_ll=True, **kwargs):
         # x : batch x n
         if set_grammar:
             self.emission = None
@@ -357,11 +365,7 @@ class BasicCGInducer(nn.Module):
             )
 
 
-        if self.model_type == 'word':
-            x = self.emit_prob_model(x, self.nt_emb, set_grammar=set_grammar)
-        else:
-            assert self.model_type == "char"
-            x = self.emit_prob_model(x, self.nt_emb, set_grammar=set_grammar)
+        x = self.emit_prob_model(x, pos, self.nt_emb, set_grammar=set_grammar)
 
         if argmax:
             printDebug("inducer_x")

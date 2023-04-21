@@ -13,6 +13,14 @@ def printDebug(*args, **kwargs):
 
 
 SMALL_NEGATIVE_NUMBER = -1e8
+DEBUG = True
+
+def dprint(*args, **kwargs):
+    if DEBUG: 
+        print("DEBUG: ", end="")
+        print(*args, **kwargs)
+
+
 def logsumexp_multiply(a, b):
     max_a = a.max()
     max_b = b.max()
@@ -375,8 +383,7 @@ class BatchCKYParser:
 
             # dim: imax x batch_size x Qres
             l_cs = torch.gather(rfunc_ixs, index=l_bs_reshape, dim=3).squeeze(dim=3)
- 
-            # dim: 3 x imax x batch_size x Qarg
+            # dim: 3 x imax x batch_size x Qres
             l_kbc = torch.stack([l_ks, l_bs, l_cs], dim=0)
 
             # dim: imax x batch_size x Qres
@@ -405,10 +412,16 @@ class BatchCKYParser:
             # dim: 2 x imax x batch_size x Qres
             lr_max = torch.stack([lmax_kbc, rmax_kbc], dim=0)
 
+            # TODO check here to verify that not all possible kbcs
+            # have been masked
+
             # tells whether left arg or right arg is more likely
             # each value of the argmax is 0 (left) or 1 (right)
             # dim: imax x batch_size x Qres
             combined_max, combined_argmax = torch.max(lr_max, dim=0)
+
+            #print("CEC combined_max:")
+            #print(combined_max)
 
             # TODO an alternative to padding here might be to initialize
             # left_chart and right_chart to all -inf
@@ -421,6 +434,7 @@ class BatchCKYParser:
 
             # dim: imax x batch_size x Qall
             combined_max = torch.concat([combined_max, padding], dim=2)
+
 
             self.left_chart[height, imin:imax] = combined_max
             self.right_chart[height, jmin:jmax] = combined_max
@@ -441,6 +455,7 @@ class BatchCKYParser:
 
     # TODO sent doesn't seem to be a necessary arg
     def viterbi_backtrack(self, backtrack_chart, sent, max_cats=None):
+
         sent_index = 0
         nodes_list = []
         sent_len = self.this_sent_len
