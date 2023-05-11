@@ -194,6 +194,7 @@ def create_batches(
     sorted_x = [x[i] for i in lst]
 
     sum_len = 0.0
+    # TODO refactor using a Batch class
     batches_w, batches_c, batches_var_c, batches_lens, batches_masks, batch_indices = [], [], [], [], [], []
     size = batch_size
     cur_len = 0

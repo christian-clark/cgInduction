@@ -1,16 +1,16 @@
-import gzip, multiprocessing
+import gzip, multiprocessing, re
 import nltk
-from sklearn.metrics import homogeneity_completeness_v_measure
 import argparse
-from .fix_terminals_wsj import single_fix_terms
-from itertools import chain
-import numpy as np
-from collections import Counter
 import logging
-from copy import deepcopy
+import numpy as np
 import seaborn as sns
 import matplotlib.pyplot as plt
+from sklearn.metrics import homogeneity_completeness_v_measure
 from sklearn.preprocessing import normalize
+from itertools import chain
+from collections import Counter
+from copy import deepcopy
+from .fix_terminals_wsj import single_fix_terms
 
 ############
 # PIOC files must be fix-terminal-ed first.
@@ -179,8 +179,11 @@ def delete_trace(tree):
 
 def delete_punc(original_t, do_nothing=0, punc_indices=None):
     PUNC_LABELS = {'PUNC', 'PU', 'PONC', 'PUNCT', "sf", ".", ",", "$.", "$,"}
+    # TODO add colon, other punc?
+    PUNC_RE = re.compile(r"([.,])(\+[.,])*")
     # assert (return_punc_indices and not punc_indices) or (not return_punc_indices and punc_indices is not None)
     t = deepcopy(original_t)
+    t.collapse_unary(collapsePOS=True, collapseRoot=True)
     indices = []
     if not do_nothing:
         if punc_indices is None:
@@ -191,15 +194,19 @@ def delete_punc(original_t, do_nothing=0, punc_indices=None):
         indexed_subs = list(enumerate(t.subtrees(filter=lambda x: x.height() == 2)))
         for sub_index, sub in indexed_subs:
             # print(sub_index, sub)
-            if sub.label() in PUNC_LABELS \
-                or 'PUNC' in sub.label() \
+            label = sub.label()
+            if label in PUNC_LABELS \
+                or 'PUNC' in label \
+                or PUNC_RE.match(label) \
                 or (not return_punc_indices and sub_index in punc_indices):
                 _prune(t, sub)
                 if return_punc_indices:
                     indices.append(sub_index)
         t = nltk.Tree.convert(t)
 
-    t.collapse_unary(collapsePOS=True, collapseRoot=True)
+    # NOTE: if this is run after removing punctuation, unary chains of 
+    # punctuation like (. (. .)) won't be removed correctly
+    #t.collapse_unary(collapsePOS=True, collapseRoot=True)
     return t, indices 
 
 #
@@ -237,7 +244,6 @@ def calc_measures_at_n(n, gold_spans, pred_spans, correct_spans, word_counts):
 
 
 def eval_rvm_et_al(args):
-
     ctx = multiprocessing.get_context('spawn')
     PROCESS_NUM = 6
     if isinstance(args, list):
@@ -279,7 +285,6 @@ def eval_rvm_et_al(args):
     assert len(gold_trees) == len(pred_trees), "Number of gold trees: {}; number of predicted trees: {}".format(len(gold_trees),
                                                                                                                 len(pred_trees))
     for keep_punc_indicator in range(2):
-
         if keep_punc_indicator == 0:
             logging.info('>>>>> WITHOUT PUNC <<<<<')
         else:

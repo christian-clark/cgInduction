@@ -20,6 +20,9 @@ class BasicCGInducer(nn.Module):
         self.arg_depth_penalty = config.getfloat(
             "arg_depth_penalty", fallback=None
         )
+        self.left_arg_penalty = config.getfloat(
+            "left_arg_penalty", fallback=None
+        )
         self.cats_json = config.get("cats_json", fallback=None)
         self.device = config["device"]
         self.eval_device = config["eval_device"]
@@ -189,21 +192,28 @@ class BasicCGInducer(nn.Module):
             )
             full_p0 = root_scores
 
-            #LARG_PENALTY = 100
-            #larg_penalty = torch.full((num_res_cats, num_arg_cats), -LARG_PENALTY)
-            #rarg_penalty = torch.full((num_res_cats, num_arg_cats), 0)
-            #penalty = torch.concat([larg_penalty, rarg_penalty], dim=1).to(self.device)
-            # dim: Qres x 2Qarg
-            # use this line to add a bias toward forward function application (i.e.
-            # argument always on right)
-            #rule_scores = F.log_softmax(self.rule_mlp(fake_emb)+penalty, dim=1)
 
+            #rule_scores = F.log_softmax(self.rule_mlp(fake_emb)+penalty, dim=1)
             #rule_scores = F.log_softmax(self.rule_mlp(fake_emb), dim=1)
 
             # dim: Qres x 2Qarg
             mlp_out = self.rule_mlp(fake_emb)
             if self.arg_depth_penalty:
                 mlp_out += self.arg_penalty_mat
+
+            # penalizes rules that use backward function application
+            # (in practice encourages right-branching structures)
+            if self.left_arg_penalty:
+                larg_penalty = torch.full(
+                    (num_res_cats, num_arg_cats),
+                    -self.left_arg_penalty
+                )
+                rarg_penalty = torch.full((num_res_cats, num_arg_cats), 0)
+                # dim: Qres x 2Qarg
+                penalty = torch.concat(
+                    [larg_penalty, rarg_penalty], dim=1
+                ).to(self.device)
+                mlp_out += penalty
 
             # dim: Qres x 2Qarg
             rule_scores = F.log_softmax(mlp_out, dim=1)
