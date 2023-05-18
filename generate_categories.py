@@ -20,9 +20,9 @@ from configparser import ConfigParser
 
 DEFAULT_CONFIG = {
     "DEFAULT": {
+        "branchCost": 1,
         "numCats": 100,
         "maxCost": 10,
-        "branchCost": 1,
         "noBranchCost": 1,
         "categoryCost": {
             "mode": "linear",

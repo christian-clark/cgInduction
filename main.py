@@ -17,8 +17,6 @@ DEFAULT_CONFIG = {
         "seed": -1,
         "device": "cpu",
         "eval_device": "cpu",
-        "num_primitives": 3,
-        "max_func_depth": 2,
         "optimizer": "adam",
         "max_grad_norm": 5,
         "learning_rate": 0.0001,
@@ -36,6 +34,8 @@ DEFAULT_CONFIG = {
         "start_epoch": 0,
     }
 }
+#        "num_primitives": 3,
+#        "max_func_depth": 2,
 
 
 def random_seed(seed_value, use_cuda):
@@ -219,7 +219,7 @@ def setup(eval_only=False):
 
 
     logging.info(
-        "Number of functor categories: {}".format(parser.num_func_cats)
+        "Total number of categories: {}".format(parser.num_all_cats)
     )
     logging.info(
         "Number of argument categories: {}".format(parser.num_arg_cats)

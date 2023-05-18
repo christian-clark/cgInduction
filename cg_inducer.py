@@ -3,7 +3,16 @@ from torch import nn
 from cky_parser_sgd import BatchCKYParser
 from char_coding_models import CharProbRNN, ResidualLayer, \
     WordProbFCFixVocabCompound
-from cg_type import CGNode, generate_categories, trees_from_json
+from cg_type import CGNode, generate_categories_by_depth, \
+    read_categories_from_file
+
+QUASI_INF = 10000000.
+DEBUG = False
+
+def printDebug(*args, **kwargs):
+    if DEBUG:
+        print("DEBUG: ", end="")
+        print(*args, **kwargs)
 
 
 class BasicCGInducer(nn.Module):
@@ -12,18 +21,8 @@ class BasicCGInducer(nn.Module):
         self.state_dim = config.getint("state_dim")
         self.rnn_hidden_dim = config.getint("rnn_hidden_dim")
         self.model_type = config["model_type"]
-        self.num_primitives = config.getint("num_primitives")
-        self.max_func_depth = config.getint("max_func_depth")
-        self.max_arg_depth = config.getint(
-            "max_arg_depth", fallback=self.max_func_depth-1
-        )
-        self.arg_depth_penalty = config.getfloat(
-            "arg_depth_penalty", fallback=None
-        )
-        self.left_arg_penalty = config.getfloat(
-            "left_arg_penalty", fallback=None
-        )
-        self.cats_json = config.get("cats_json", fallback=None)
+
+
         self.device = config["device"]
         self.eval_device = config["eval_device"]
 
@@ -40,7 +39,37 @@ class BasicCGInducer(nn.Module):
         else:
             raise ValueError("Model type should be char or word")
 
-        self.init_cats_and_masks()
+
+        self.num_primitives = config.getint("num_primitives", fallback=None)
+        self.max_func_depth = config.getint("max_func_depth", fallback=None)
+        self.max_arg_depth = config.getint("max_arg_depth", fallback=None)
+        self.cats_list = config.get("category_list", fallback=None)
+        self.arg_depth_penalty = config.getfloat(
+            "arg_depth_penalty", fallback=None
+        )
+        self.left_arg_penalty = config.getfloat(
+            "left_arg_penalty", fallback=None
+        )
+
+        # option 1: specify a set of categories according to maximum depth
+        # and number of primitives (used in 2023 ACL Findings paper)
+        if self.num_primitives is not None:
+            assert self.max_func_depth is not None
+            assert self.cats_list is None
+            if self.max_arg_depth is None:
+                self.max_arg_depth = self.max_func_depth - 1
+            self.init_cats_by_depth()
+
+        # option 2: specify a file with a list of categories
+        else:
+            assert self.cats_list is not None
+            # all of this stuff is just for option 1
+            assert self.max_func_depth is None
+            assert self.max_arg_depth is None
+            assert self.arg_depth_penalty is None
+            assert self.left_arg_penalty is None
+            self.init_cats_from_list()
+
         # CG: "embeddings" for the categories are just one-hot vectors
         # these are used for result categories
         self.fake_emb = nn.Parameter(torch.eye(self.num_res_cats))
@@ -48,7 +77,7 @@ class BasicCGInducer(nn.Module):
         # actual embeddings are used to calculate split scores
         # (i.e. prob of terminal vs nonterminal)
         self.nt_emb = nn.Parameter(
-            torch.randn(self.num_func_cats, state_dim)
+            torch.randn(self.num_all_cats, state_dim)
         )
         # maps res_cat to arg_cat x {arg_on_L, arg_on_R}
         self.rule_mlp = nn.Linear(self.num_res_cats, 2*self.num_arg_cats)
@@ -64,7 +93,7 @@ class BasicCGInducer(nn.Module):
 #        self.rule_mlp.weight = nn.Parameter(fake_weights)
 
         self.root_emb = nn.Parameter(torch.eye(1)).to(self.device)
-        self.root_mlp = nn.Linear(1, self.num_func_cats).to(self.device)
+        self.root_mlp = nn.Linear(1, self.num_all_cats).to(self.device)
 
         # decides terminal or nonterminal
         self.split_mlp = nn.Sequential(
@@ -75,51 +104,41 @@ class BasicCGInducer(nn.Module):
         ).to(self.device)
 
         self.parser = BatchCKYParser(
-            self.ix2cat,
-            self.lfunc_ixs,
-            self.rfunc_ixs,
-            qfunc=self.num_func_cats,
+            ix2cat=self.ix2cat,
+            lfunc_ixs=self.lfunc_ixs,
+            rfunc_ixs=self.rfunc_ixs,
+            larg_mask=self.larg_mask,
+            rarg_mask=self.rarg_mask,
+            qall=self.num_all_cats,
             qres=self.num_res_cats,
             qarg=self.num_arg_cats,
             device=self.device
         )
 
 
-    def init_cats_and_masks(self):
-        if self.cats_json is not None:
-            # TODO implement this option -- will require a different
-            # approach to figuring out res_cats etc
-            raise NotImplementedError()
-            #all_cats = cat_trees_from_json(self.cats_json)
-        else:
-            cats_by_max_depth, ix2cat, ix2depth = generate_categories(
-                self.num_primitives,
-                self.max_func_depth,
-                self.max_arg_depth
-            )
-
-        func_cats = cats_by_max_depth[self.max_func_depth]
-        num_func_cats = len(func_cats)
-
+    def init_cats_by_depth(self):
+        cats_by_max_depth, ix2cat, ix2depth = generate_categories_by_depth(
+            self.num_primitives,
+            self.max_func_depth,
+            self.max_arg_depth
+        )
+        all_cats = cats_by_max_depth[max_func_depth]
         # res_cats (result cats) are the categories that can be
         # a result from a functor applying to its argument.
         # Since a functor's depth is one greater than the max depth between
         # its argument and result, the max depth of a result
         # is self.max_func_depth-1
-        res_cats = cats_by_max_depth[self.max_func_depth-1]
-        num_res_cats = len(res_cats)
-
+        res_cats = cats_by_max_depth[max_func_depth-1]
         # optionally constrain the complexity of argument categories
-        if self.max_arg_depth is None:
-            arg_cats = res_cats
-            num_arg_cats = num_res_cats
-        else:
-            arg_cats = cats_by_max_depth[self.max_arg_depth]
-            num_arg_cats = len(arg_cats)
+        arg_cats = cats_by_max_depth[max_arg_depth]
+
+        num_all_cats = len(all_cats)
+        num_res_cats = len(res_cats)
+        num_arg_cats = len(arg_cats)
 
         # only allow primitive categories to be at the root of the parse
         # tree
-        can_be_root = torch.full((num_func_cats,), fill_value=-np.inf)
+        can_be_root = torch.full((num_all_cats,), fill_value=-np.inf)
         for cat in cats_by_max_depth[0]:
             assert cat.is_primitive()
             ix = ix2cat.inverse[cat]
@@ -145,7 +164,7 @@ class BasicCGInducer(nn.Module):
             res_ix = ix2cat.inverse[res]
             for arg in arg_cats:
                 arg_ix = ix2cat.inverse[arg]
-                # TODO possible not to hardcode operator?
+                # TODO don't hard-code operator
                 lfunc = CGNode("-b", res, arg)
                 lfunc_ix = ix2cat.inverse[lfunc]
                 lfunc_ixs[res_ix, arg_ix] = lfunc_ix
@@ -153,7 +172,7 @@ class BasicCGInducer(nn.Module):
                 rfunc_ix = ix2cat.inverse[rfunc]
                 rfunc_ixs[res_ix, arg_ix] = rfunc_ix
 
-        self.num_func_cats = num_func_cats
+        self.num_all_cats = num_all_cats
         self.num_res_cats = num_res_cats
         self.num_arg_cats = num_arg_cats
         self.ix2cat = ix2cat
@@ -174,6 +193,105 @@ class BasicCGInducer(nn.Module):
         self.lfunc_ixs = lfunc_ixs.to(self.device)
         self.rfunc_ixs = rfunc_ixs.to(self.device)
         self.root_mask = can_be_root.to(self.device)
+        # these masks are for blocking impossible pairs of argument
+        # and result categories -- not needed here
+        self.larg_mask = None
+        self.rarg_mask = None
+
+
+    def init_cats_from_list(self):
+        all_cats, res_cats, arg_cats, ix2cat = read_categories_from_file(
+            self.cats_list
+        )
+
+        res_arg_cats = res_cats.union(arg_cats)
+
+        num_all_cats = len(all_cats)
+        num_res_cats = len(res_cats)
+        num_arg_cats = len(arg_cats)
+        num_res_arg_cats = len(res_arg_cats)
+
+        printDebug("all cats:", all_cats)
+        printDebug("res cats:", res_cats)
+        printDebug("arg cats:", arg_cats)
+
+
+        # only allow primitive categories to be at the root of the parse
+        # tree
+        can_be_root = torch.full((num_all_cats,), fill_value=-np.inf)
+        for cat in all_cats:
+            if cat.is_primitive():
+                ix = ix2cat.inverse[cat]
+                can_be_root[ix] = 0
+
+        # given an result cat index (i) and an argument cat 
+        # index (j), lfunc_ixs[i, j] gives the functor cat that
+        # takes cat j as a right argument and returns cat i
+        # e.g. for the rule V -> V-bN N:
+        # lfunc_ixs[V, N] = V-bN
+        lfunc_ixs = torch.empty(
+            num_res_arg_cats, num_res_arg_cats, dtype=torch.int64
+        )
+
+        # same idea but functor appears on the right
+        # e.g. for the rule V -> N V-aN:
+        # rfunc_ixs[V, N] = V-aN
+        rfunc_ixs = torch.empty(
+            num_res_arg_cats, num_res_arg_cats, dtype=torch.int64
+        )
+
+        # used to block impossible argument-result pairs with arg on left
+        larg_mask = torch.zeros(
+            num_res_arg_cats, num_res_arg_cats, dtype=torch.float32
+        )
+        # used to block impossible argument-result pairs with arg on right
+        rarg_mask = torch.zeros(
+            num_res_arg_cats, num_res_arg_cats, dtype=torch.float32
+        )
+
+        for res in res_arg_cats:
+            res_ix = ix2cat.inverse[res]
+            for arg in res_arg_cats:
+                arg_ix = ix2cat.inverse[arg]
+                # TODO don't hard-code operator
+                lfunc = CGNode("-b", res, arg)
+                if res not in res_cats or arg not in arg_cats \
+                    or lfunc not in all_cats:
+                    printDebug("bad combo:")
+                    printDebug("res:", res)
+                    printDebug("arg:", arg)
+                    printDebug("lfunc:", lfunc)
+                    rarg_mask[res_ix, arg_ix] = -QUASI_INF
+                    # just a dummy value
+                    lfunc_ixs[res_ix, arg_ix] = 0
+                else:
+                    lfunc_ix = ix2cat.inverse[lfunc]
+                    lfunc_ixs[res_ix, arg_ix] = lfunc_ix
+
+                rfunc = CGNode("-a", res, arg)
+                if res not in res_cats or arg not in arg_cats \
+                    or rfunc not in all_cats:
+                    printDebug("bad combo:")
+                    printDebug("res:", res)
+                    printDebug("arg:", arg)
+                    printDebug("rfunc:", rfunc)
+                    larg_mask[res_ix, arg_ix] = -QUASI_INF
+                    # just a dummy value
+                    rfunc_ixs[res_ix, arg_ix] = 0
+                else:
+                    rfunc_ix = ix2cat.inverse[rfunc]
+                    rfunc_ixs[res_ix, arg_ix] = rfunc_ix
+
+        self.num_all_cats = num_all_cats
+        # res and arg cats get pooled together
+        self.num_res_cats = num_res_arg_cats
+        self.num_arg_cats = num_res_arg_cats
+        self.ix2cat = ix2cat
+        self.lfunc_ixs = lfunc_ixs.to(self.device)
+        self.rfunc_ixs = rfunc_ixs.to(self.device)
+        self.larg_mask = larg_mask.to(self.device)
+        self.rarg_mask = rarg_mask.to(self.device)
+        self.root_mask = can_be_root.to(self.device)
 
         
     def forward(self, x, eval=False, argmax=False, use_mean=False, indices=None, set_grammar=True, return_ll=True, **kwargs):
@@ -182,7 +300,7 @@ class BasicCGInducer(nn.Module):
             self.emission = None
 
             fake_emb = self.fake_emb
-            num_func_cats = self.num_func_cats
+            num_all_cats = self.num_all_cats
             num_res_cats = self.num_res_cats
             num_arg_cats = self.num_arg_cats
 

@@ -4,7 +4,13 @@ from treenode import Node, nodes_to_tree
 import torch.nn.functional as F
 import numpy as np
 
-# from .cky_parser_lcg_sparse import sparse_vit_add_trick
+
+DEBUG = False
+def printDebug(*args, **kwargs):
+    if DEBUG:
+        print("DEBUG: ", end="")
+        print(*args, **kwargs)
+
 
 SMALL_NEGATIVE_NUMBER = -1e8
 def logsumexp_multiply(a, b):
@@ -17,7 +23,8 @@ def logsumexp_multiply(a, b):
 # for dense grammar only! ie D must be -1
 class BatchCKYParser:
     def __init__(
-        self, ix2cat, lfunc_ixs, rfunc_ixs, qfunc, qres, qarg, device="cpu"
+        self, ix2cat, lfunc_ixs, rfunc_ixs, larg_mask, rarg_mask, qall, qres,
+        qarg, device="cpu"
     ):
         self.D = -1
         # TODO is this correct?
@@ -29,7 +36,9 @@ class BatchCKYParser:
         self.ix2cat = ix2cat
         self.lfunc_ixs = lfunc_ixs
         self.rfunc_ixs = rfunc_ixs
-        self.Qfunc = qfunc
+        self.larg_mask = larg_mask
+        self.rarg_mask = rarg_mask
+        self.Qall = qall
         self.Qres = qres
         self.Qarg = qarg
         self.this_sent_len = -1
@@ -54,6 +63,10 @@ class BatchCKYParser:
 
     def marginal(self, sents, viterbi_flag=False, only_viterbi=False, sent_indices=None):
         self.sent_indices = sent_indices
+
+        printDebug("calculating marginal")
+        printDebug("viterbi flag: {}".format(viterbi_flag))
+        printDebug("only viterbi: {}".format(only_viterbi))
 
         if not only_viterbi:
             self.compute_inside_logspace(sents)
@@ -92,7 +105,7 @@ class BatchCKYParser:
         return logprob_list, vtree_list, vproduction_counter_dict_list, vlr_branches_list
 
 
-    def compute_inside_logspace(self, sents): #sparse
+    def compute_inside_logspace(self, sents):
         try:
             self.this_sent_len = len(sents[0])
         except:
@@ -101,12 +114,14 @@ class BatchCKYParser:
         batch_size = len(sents)
         sent_len = self.this_sent_len
 
-        num_points = sent_len + 1
         # left chart is the left right triangle of the chart, the top row is the lexical items, and the bottom cell is the
         #  top cell. The right chart is the left chart pushed against the right edge of the chart. The chart is a square.
-        self.left_chart = torch.zeros((sent_len, sent_len, batch_size, self.Qfunc)).float().to(self.device)
-        self.right_chart = torch.zeros((sent_len, sent_len, batch_size, self.Qfunc)).float().to(self.device)
-        # print('lex')
+        self.left_chart = torch.zeros(
+            (sent_len, sent_len, batch_size, self.Qall)
+        ).float().to(self.device)
+        self.right_chart = torch.zeros(
+            (sent_len, sent_len, batch_size, self.Qall)
+        ).float().to(self.device)
         self.get_lexis_prob(sents, self.left_chart)
         self.right_chart[0] = self.left_chart[0]
 
@@ -118,35 +133,38 @@ class BatchCKYParser:
             height = ij_diff
 
             # a square of the left chart
-            # dim: height x imax x batch_size x Qfunc
+            # dim: height x imax x batch_size x Qall
             b = self.left_chart[0:height, imin:imax]
-            # dim: height x imax x batch_size x Qfunc
+            # dim: height x imax x batch_size x Qall
             c = torch.flip(self.right_chart[0:height, jmin:jmax], dims=[0])
             # TODO this can be optimized by taking advantage of the fact that
             # maximally deep categories can only appear on preterminal nodes
             # NOTE: doing the logsumexp here means this takes more memory
             # than the parallel line in compute_viterbi_inside
-            # dim: imax x batch_size x Qfunc x Qfunc
-            #dot_temp_mat = torch.logsumexp(b[...,None]+c[...,None,:], dim=0)
-            # dot_temp_mat[..., i, j] is score for left child i, right child j
 
-            # dim: height x imax x batch_size x Qfunc x Qarg
+            # probability of argument i on the left followed by functor j
+            # on the right
+            # dim: height x imax x batch_size x Qall x Qarg
             children_score_larg = torch.logsumexp(
                 b[...,None,:self.Qarg] + c[...,None], dim=0
             )
 
-            # dim: height x imax x batch_size x Qfunc x Qarg
+            # probability of functor i on the left followed by argument j
+            # on the right
+            # dim: height x imax x batch_size x Qall x Qarg
             children_score_rarg = torch.logsumexp(
                 b[...,None] + c[...,None,:self.Qarg], dim=0
             )
 
-            # scores_larg[..., i, j] is score for parent i, larg j
+            # probability that parent category i branches into left argument j
+            # and right functor i-aj
             # dim: imax x batch_size x Qres x Qarg
             scores_larg = self.log_G_larg.to(self.device).repeat(
                 imax, batch_size, 1, 1
             )
-
-            #print("CEC scores_larg shape: {}".format(scores_larg.shape))
+            # probability that parent category i branches into left functor i-bj
+            # and right argument j
+            # dim: height x imax x batch_size x Qres x Qarg
             scores_rarg = self.log_G_rarg.to(self.device).repeat(
                 imax, batch_size, 1, 1
             )
@@ -155,67 +173,59 @@ class BatchCKYParser:
             # going with parent cat i, larg cat j
             # dim: imax x batch_size x Qres x Qarg
             rfunc_ixs = self.rfunc_ixs.repeat(imax, batch_size, 1, 1)
+            # lfunc_ixs[..., i, j] tells the index of the left-child functor
+            # going with parent cat i, rarg cat j
+            # dim: imax x batch_size x Qres x Qarg
             lfunc_ixs = self.lfunc_ixs.repeat(imax, batch_size, 1, 1)
 
-            # dtm_permute [..., i, j] is score for right child i, left child j
-            # needed to play with gather() correctly for larg case
-            # dim: imax x batch_size x Qfunc x Qfunc
-            #dtm_permute = dot_temp_mat.permute(0, 1, 3, 2)
-
-            # dot_temp_mat_larg[..., i, j] is score for parent i, larg j
-            # dim: imax x batch_size x Qres x Qarg
-            #dot_temp_mat_larg = torch.gather(
-            #    dtm_permute[..., :self.Qarg], dim=2, index=rfunc_ixs
-            #)
+            # rearrange children_score_larg to index by result (parent)
+            # and argument rather than functor and argument
+            # dim: height x imax x batch_size x Qres x Qarg
             children_score_larg = torch.gather(
                 children_score_larg, dim=2, index=rfunc_ixs
             )
-            #print("CEC dot_temp_mat_larg shape: {}".format(dot_temp_mat_larg.shape))
+            # block impossible result-argument combinations
+            if self.larg_mask is not None:
+                children_score_larg += self.larg_mask
 
-            # dot_temp_mat_larg[..., i, j] is score for parent i, rarg j
-            # dim: imax x batch_size x Qres x Qarg
-            #dot_temp_mat_rarg = torch.gather(
-            #    dot_temp_mat[..., :self.Qarg], dim=2, index=lfunc_ixs
-            #)
+            # rearrange children_score_rarg to index by result (parent)
+            # and argument rather than functor and argument
+            # dim: height x imax x batch_size x Qres x Qarg
             children_score_rarg = torch.gather(
                 children_score_rarg, dim=2, index=lfunc_ixs
             )
+            # block impossible result-argument combinations
+            if self.rarg_mask is not None:
+                children_score_rarg += self.rarg_mask
 
             # TODO can this be done more space-efficiently?
             # dim: imax x batch_size x Qres x Qarg
-            #y_larg = scores_larg + dot_temp_mat_larg
-            #y_rarg = scores_rarg + dot_temp_mat_rarg
             y_larg = scores_larg + children_score_larg
             y_rarg = scores_rarg + children_score_rarg
+
             # combine left and right arg probabilities
             # dim: imax x batch_size x Qres x Qarg
             y1 = torch.logsumexp(torch.stack([y_larg, y_rarg]), dim=0)
             # marginalize over arg categories
             # dim: imax x batch_size x Qres
-            #y1 = torch.logsumexp(y1, dim=2)
             y1 = torch.logsumexp(y1, dim=3)
-
-            #print("CEC y1 shape: {}".format(y1.shape))
 
             # before this, y1 just contains probabilities for the Qres
             # result categories.
-            # But left_chart and right_chart maintain all Qfunc
+            # But left_chart and right_chart maintain all Qall
             # categories, so pad y1 to get it up to that size
 
             # TODO an alternative to padding here might be to initialize
             # left_chart and right_chart to all -inf
             QUASI_INF = 10000000.
             padding = torch.full(
-                (imax, batch_size, self.Qfunc-self.Qres),
+                (imax, batch_size, self.Qall-self.Qres),
                 fill_value=-QUASI_INF
             )
             padding = padding.to(self.device)
-            #print("CEC padding shape: {}".format(padding.shape))
 
-            # dim: imax x batch_size x Qfunc
+            # dim: imax x batch_size x Qall
             y1 = torch.concat([y1, padding], dim=2)
-
-
             self.left_chart[height, imin:imax] = y1
             self.right_chart[height, jmin:jmax] = y1
         return
@@ -238,25 +248,22 @@ class BatchCKYParser:
 
 
     def compute_viterbi_inside(self, sent):
+        printDebug("computing viterbi inside")
         self.this_sent_len = sent.shape[1]
         batch_size = 1
         sent_len = self.this_sent_len
-        num_points = sent_len + 1
         self.left_chart = torch.zeros(
-            (sent_len, sent_len, batch_size, self.Qfunc)
+            (sent_len, sent_len, batch_size, self.Qall)
         ).float().to(self.device)
         self.right_chart = torch.zeros(
-            (sent_len, sent_len, batch_size, self.Qfunc)
+            (sent_len, sent_len, batch_size, self.Qall)
         ).float().to(self.device)
-
         backtrack_chart = {}
-
-        # print('lex')
         self.get_lexis_prob(sent, self.left_chart)
         self.right_chart[0] = self.left_chart[0]
 
-
         for ij_diff in range(1, sent_len):
+            printDebug("ij_diff: {}".format(ij_diff))
             imin = 0
             imax = sent_len - ij_diff
             jmin = ij_diff
@@ -264,89 +271,83 @@ class BatchCKYParser:
             height = ij_diff
 
             # a square of the left chart
-            # dim: height x imax x batch_size x Qfunc
+            # dim: height x imax x batch_size x Qall
             b = self.left_chart[0:height, imin:imax]
-            # dim: height x imax x batch_size x Qfunc
+            # dim: height x imax x batch_size x Qall
             c = torch.flip(self.right_chart[0:height, jmin:jmax], dims=[0])
 
-            #print("CEC b")
-            #print(b)
-            #print("CEC c")
-            #print(c)
-
-            # dim: height x imax x batch_size x Qfunc x Qfunc
-            #dot_temp_mat = ( b[...,None]+c[...,None,:] ).view(
-                #height, imax, batch_size, self.Qfunc, self.Qfunc
-            #)
-
-            # dim: height x imax x batch_size x Qfunc x Qarg
+            # probability of argument i on the left followed by functor j
+            # on the right
+            # dim: height x imax x batch_size x Qall x Qarg
             children_score_larg = b[...,None,:self.Qarg]+c[...,None]
 
-            # dim: height x imax x batch_size x Qfunc x Qarg
+            # probability of functor i on the left followed by argument j
+            # on the right
+            # dim: height x imax x batch_size x Qall x Qarg
             children_score_rarg = b[...,None]+c[...,None,:self.Qarg]
-            #print("CEC dot_temp_mat")
-            #print(dot_temp_mat)
 
-            # scores_larg[..., i, j] is score for parent i, larg j
+            # probability that parent category i branches into left argument j
+            # and right functor i-aj
             # dim: height x imax x batch_size x Qres x Qarg
             scores_larg = self.log_G_larg.to(self.device).repeat(
                 height, imax, batch_size, 1, 1
             )
+            # probability that parent category i branches into left functor i-bj
+            # and right argument j
+            # dim: height x imax x batch_size x Qres x Qarg
             scores_rarg = self.log_G_rarg.to(self.device).repeat(
                 height, imax, batch_size, 1, 1
             )
 
-            #print("CEC scores_larg")
-            #print(scores_larg)
-            #print("CEC scores_rarg")
-            #print(scores_rarg)
-
+            # rfunc_ixs[..., i, j] tells the index of the right-child functor
+            # going with parent cat i, larg cat j
             # dim: height x imax x batch_size x Qres x Qarg
             rfunc_ixs = self.rfunc_ixs.repeat(height, imax, batch_size, 1, 1)
+            # lfunc_ixs[..., i, j] tells the index of the left-child functor
+            # going with parent cat i, rarg cat j
+            # dim: imax x batch_size x Qres x Qarg
             lfunc_ixs = self.lfunc_ixs.repeat(height, imax, batch_size, 1, 1)
 
-            #print("CEC rfunc_ixs")
-            #print(rfunc_ixs)
-            #print("CEC lfunc_ixs")
-            #print(lfunc_ixs)
+            printDebug("larg mask:")
+            printDebug(self.larg_mask)
 
-            #dtm_permute = dot_temp_mat.permute(0, 1, 2, 4, 3)
-
-            #print("CEC dtm_permute")
-            #print(dtm_permute)
-
+            # rearrange children_score_larg to index by result (parent)
+            # and argument rather than functor and argument
             # dim: height x imax x batch_size x Qres x Qarg
-            #dot_temp_mat_larg = torch.gather(
-            #    dtm_permute[..., :self.Qarg], dim=3, index=rfunc_ixs
-            #)
-
             children_score_larg = torch.gather(
                 children_score_larg, dim=3, index=rfunc_ixs
             )
+            # block impossible result-argument combinations
+            if self.larg_mask is not None:
+                children_score_larg += self.larg_mask
 
-            #dot_temp_mat_rarg = torch.gather(
-            #    dot_temp_mat[..., :self.Qarg], dim=3, index=lfunc_ixs
-            #)
+            printDebug("children score larg:")
+            printDebug(children_score_larg)
 
+            printDebug("rarg mask:")
+            printDebug(self.rarg_mask)
+            # rearrange children_score_rarg to index by result (parent)
+            # and argument rather than functor and argument
+            # dim: height x imax x batch_size x Qres x Qarg
             children_score_rarg = torch.gather(
                 children_score_rarg, dim=3, index=lfunc_ixs
             )
+            # block impossible result-argument combinations
+            if self.rarg_mask is not None:
+                children_score_rarg += self.rarg_mask
 
-            #print("CEC dot_temp_mat_larg")
-            #print(dot_temp_mat_larg)
-            #print("CEC dot_temp_mat_rarg")
-            #print(dot_temp_mat_rarg)
-
+            printDebug("children score rarg:")
+            printDebug(children_score_rarg)
+            # probability that parent category i branches into left argument j
+            # and right functor i-aj, that category j spans the words on the
+            # left, and that category i-aj spans the words on the right
             # dim: height x imax x batch_size x Qres x Qarg
-            #combined_scores_larg = scores_larg + dot_temp_mat_larg
-            #combined_scores_rarg = scores_rarg + dot_temp_mat_rarg
             combined_scores_larg = scores_larg + children_score_larg
+            # probability that parent category i branches into left functor
+            # i-bj and right argument j, that category i-bj spans the words on
+            # the left, and that category j spans the words on the right
+            # dim: height x imax x batch_size x Qres x Qarg
             combined_scores_rarg = scores_rarg + children_score_rarg
-
-            #print("CEC combined_scores_larg")
-            #print(combined_scores_larg)
-            #print("CEC combined_scores_rarg")
-            #print(combined_scores_rarg)
 
             combined_scores_larg = combined_scores_larg.permute(1,2,3,0,4)
             # dim: imax x batch_size x Qres x height*Qarg
@@ -359,20 +360,9 @@ class BatchCKYParser:
                 imax, batch_size, self.Qres, -1
             )
 
-            #print("CEC combined_scores_larg permuted")
-            #print(combined_scores_larg)
-            #print("CEC combined_scores_rarg permuted")
-            #print(combined_scores_rarg)
-
-
             # dim: imax x batch_size x Qres
             lmax_kbc, largmax_kbc = torch.max(combined_scores_larg, dim=3)
             rmax_kbc, rargmax_kbc = torch.max(combined_scores_rarg, dim=3)
-
-            #print("CEC lmax_kbc")
-            #print(lmax_kbc)
-            #print("CEC largmax_kbc")
-            #print(largmax_kbc)
 
             # dim: imax x batch_size x Qres
             l_ks = torch.div(largmax_kbc, self.Qarg, rounding_mode="floor") \
@@ -380,24 +370,13 @@ class BatchCKYParser:
             # dim: imax x batch_size x Qres
             l_bs = largmax_kbc % self.Qarg
 
-            #print("CEC l_ks")
-            #print(l_ks)
-            #print("CEC l_bs")
-            #print(l_bs)
-
             # dim: imax x batch_size x Qres x 1
             l_bs_reshape = l_bs.view(imax, batch_size, self.Qres, 1)
-
-            #print("CEC l_bs_reshape:")
-            #print(l_bs_reshape)
 
             # dim: imax x batch_size x Qres x Qarg
             rfunc_ixs = self.rfunc_ixs.repeat(
                 imax, batch_size, 1, 1
             )
-
-            #print("CEC rfunc_ixs:")
-            #print(rfunc_ixs)
 
             # dim: imax x batch_size x Qres
             l_cs = torch.gather(rfunc_ixs, index=l_bs_reshape, dim=3).squeeze(dim=3)
@@ -440,12 +419,12 @@ class BatchCKYParser:
             # left_chart and right_chart to all -inf
             QUASI_INF = 10000000.
             padding = torch.full(
-                (imax, batch_size, self.Qfunc-self.Qres),
+                (imax, batch_size, self.Qall-self.Qres),
                 fill_value=-QUASI_INF
             )
             padding = padding.to(self.device)
 
-            # dim: imax x batch_size x Qfunc
+            # dim: imax x batch_size x Qall
             combined_max = torch.concat([combined_max, padding], dim=2)
 
             self.left_chart[height, imin:imax] = combined_max

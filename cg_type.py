@@ -1,5 +1,12 @@
-import json, bidict
+import json, bidict, sys
 from itertools import product as prod
+
+
+DEBUG = False
+def printDebug(*args, **kwargs):
+    if DEBUG:
+        print("DEBUG: ", end="")
+        print(*args, **kwargs)
 
 
 class CGNode:
@@ -42,10 +49,13 @@ class CGNode:
     def __eq__(self, other):
         if self.is_primitive():
             return other.is_primitive() and self.val == other.val
+        elif other.is_primitive(): return False
         else:
+            val1 = self.val
+            val2 = other.val
             res1, arg1 = self.res_arg
             res2, arg2 = other.res_arg
-            return res1 == res2 and  arg1 == arg2
+            return val1 == val2 and res1 == res2 and arg1 == arg2
 
     # needed for building sets of CGNodes
     def __hash__(self):
@@ -54,7 +64,9 @@ class CGNode:
 
 
 
-def generate_categories(num_primitives, max_depth, max_arg_depth=None):
+def generate_categories_by_depth(
+    num_primitives, max_depth, max_arg_depth=None
+):
     OPERATORS = ["-a", "-b"]
     if max_arg_depth is None:
         max_arg_depth = max_depth
@@ -93,32 +105,72 @@ def generate_categories(num_primitives, max_depth, max_arg_depth=None):
     return cs_dleq, ix2cat, ix2depth
 
 
-# TODO implement this and probably remove trees_from_json and
-# _recursive_build_tree
-def cgnode_from_string(string):
-    pass
+def category_from_string(string):
+    OPERATORS = ["-a", "-b"]
+    if string[0] == "{":
+        assert string[-1] == "}"
+        string = string[1:-1]
+    return_cgnode = None
 
+    # base case: string is primitive category
+    primitive = True
+    for op in OPERATORS:
+        if op in string:
+            primitive = False
+            break
+    if primitive:
+        return_cgnode = CGNode(string)
 
-def trees_from_json(cats_json):
-    all_trees = list()
-    j = json.load(open(cats_json))
-    for jtree in j:
-        tree = CGTree()
-        _recursive_build_tree(tree, jtree)
-        all_trees.append(tree)
-    return all_trees
-
-
-def _recursive_build_tree(tree, jtree, parent=None):
-    new = jtree[0]
-    new_node = Node(new)
-    tree.add_node(new_node, parent=parent)
-    if len(jtree) == 3:
-        lchild = jtree[1]
-        rchild = jtree[2]
-        nid = new_node.identifier
-        _recursive_build_tree(tree, lchild, parent=nid)
-        _recursive_build_tree(tree, rchild, parent=nid)
+    # recursive case: split string at the operator
     else:
-        assert len(jtree) == 1
+        paren_count = 0
+        split_ix = -1
+        for ix, char in enumerate(string):
+            if char == "{":
+                paren_count += 1
+            elif char == "}":
+                paren_count -= 1
+            if paren_count == 0:
+                split_ix = ix + 1
+                break
+        for op in OPERATORS:
+            op_l = len(op)
+            if string[split_ix:split_ix+op_l] == op:
+                res = string[0:split_ix]
+                arg = string[split_ix+op_l:]
+                return_cgnode = CGNode(
+                    op, category_from_string(res), category_from_string(arg)
+                )
+                break
+
+    assert return_cgnode is not None
+    return return_cgnode
+
+
+def read_categories_from_file(f):
+    all_cats = set()
+    for l in open(f):
+        cat = category_from_string(l.strip())
+        if cat in all_cats:
+            printDebug("warning: category {} is duplicated".format(cat))
+        else:
+            all_cats.add(cat)
+    res_cats = set()
+    arg_cats = set()
+    for cat in all_cats:
+        if cat.is_primitive(): continue
+        res, arg = cat.res_arg
+        if not res in all_cats or not arg in all_cats:
+            raise Exception("if category (res)(op)(arg) is in the list, res and arg must be in the list too")
+        res_cats.add(res)
+        arg_cats.add(arg)
+    # categories that can be arguments or results come first in ix2cat
+    ix2cat = bidict.bidict()
+    res_arg_cats = res_cats.union(arg_cats)
+    for cat in res_arg_cats:
+        ix2cat[len(ix2cat)] = cat
+    for cat in all_cats - res_arg_cats:
+        ix2cat[len(ix2cat)] = cat
+    assert len(ix2cat) == len(all_cats)
+    return all_cats, res_cats, arg_cats, ix2cat
 
