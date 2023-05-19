@@ -61,6 +61,9 @@ class CGNode:
     def __hash__(self):
         return hash(str(self))
 
+    # needed for sorting lists of CGNodes
+    def __lt__(self, other):
+        return str(self) < str(other)
 
 
 
@@ -79,7 +82,9 @@ def generate_categories_by_depth(
     cs_dleq[0] = {CGNode(str(p)) for p in range(num_primitives)}
     ix2cat = bidict.bidict()
     ix2depth = list()
-    for cat in cs_dleq[0]:
+    # sorting ensures cats will be added to ix2cat in a consistent order
+    # across runs (for reproducibility)
+    for cat in sorted(cs_dleq[0]):
         ix2cat[len(ix2cat)] = cat
         ix2depth.append(0)
 
@@ -99,7 +104,7 @@ def generate_categories_by_depth(
             for o in OPERATORS:
                 cs_deqiplus1.add(CGNode(o, res, arg))
         cs_dleq[i+1] = cs_dleq[i].union(cs_deqiplus1)
-        for cat in cs_deqiplus1:
+        for cat in sorted(cs_deqiplus1):
             ix2cat[len(ix2cat)] = cat
             ix2depth.append(i+1)
     return cs_dleq, ix2cat, ix2depth

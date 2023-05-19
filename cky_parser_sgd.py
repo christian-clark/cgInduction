@@ -64,10 +64,6 @@ class BatchCKYParser:
     def marginal(self, sents, viterbi_flag=False, only_viterbi=False, sent_indices=None):
         self.sent_indices = sent_indices
 
-        printDebug("calculating marginal")
-        printDebug("viterbi flag: {}".format(viterbi_flag))
-        printDebug("only viterbi: {}".format(only_viterbi))
-
         if not only_viterbi:
             self.compute_inside_logspace(sents)
             # nodes_list, logprob_list = self.sample_tree(sents)
@@ -249,6 +245,9 @@ class BatchCKYParser:
 
     def compute_viterbi_inside(self, sent):
         printDebug("computing viterbi inside")
+        printDebug("input:")
+        printDebug(sent.flatten()[:20])
+
         self.this_sent_len = sent.shape[1]
         batch_size = 1
         sent_len = self.this_sent_len
@@ -281,6 +280,9 @@ class BatchCKYParser:
             # dim: height x imax x batch_size x Qall x Qarg
             children_score_larg = b[...,None,:self.Qarg]+c[...,None]
 
+            printDebug("children score larg:")
+            printDebug(children_score_larg.flatten()[:20])
+
             # probability of functor i on the left followed by argument j
             # on the right
             # dim: height x imax x batch_size x Qall x Qarg
@@ -308,9 +310,6 @@ class BatchCKYParser:
             # dim: imax x batch_size x Qres x Qarg
             lfunc_ixs = self.lfunc_ixs.repeat(height, imax, batch_size, 1, 1)
 
-            printDebug("larg mask:")
-            printDebug(self.larg_mask)
-
             # rearrange children_score_larg to index by result (parent)
             # and argument rather than functor and argument
             # dim: height x imax x batch_size x Qres x Qarg
@@ -321,11 +320,9 @@ class BatchCKYParser:
             if self.larg_mask is not None:
                 children_score_larg += self.larg_mask
 
-            printDebug("children score larg:")
-            printDebug(children_score_larg)
+            printDebug("children score larg after gather:")
+            printDebug(children_score_larg.flatten()[:20])
 
-            printDebug("rarg mask:")
-            printDebug(self.rarg_mask)
             # rearrange children_score_rarg to index by result (parent)
             # and argument rather than functor and argument
             # dim: height x imax x batch_size x Qres x Qarg
@@ -336,8 +333,6 @@ class BatchCKYParser:
             if self.rarg_mask is not None:
                 children_score_rarg += self.rarg_mask
 
-            printDebug("children score rarg:")
-            printDebug(children_score_rarg)
             # probability that parent category i branches into left argument j
             # and right functor i-aj, that category j spans the words on the
             # left, and that category i-aj spans the words on the right

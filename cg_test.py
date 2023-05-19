@@ -29,11 +29,11 @@ print(category_from_string("0"))
 print(category_from_string("1"))
 print(category_from_string("{{{0-a0}-a{0-a0}}-a{{1-b1}-b{1-b1}}}"))
 
-all_cats, res_cats, arg_cats, ix2cat = read_categories_from_file(sys.argv[1])
-print(all_cats)
-print(res_cats)
-print(arg_cats)
-print(ix2cat)
+#all_cats, res_cats, arg_cats, ix2cat = read_categories_from_file(sys.argv[1])
+#print(all_cats)
+#print(res_cats)
+#print(arg_cats)
+#print(ix2cat)
 
 # primitives, depth(, argdepth)
 #cs_dleq, ix2cat = generate_categories(5, 3, 1)
@@ -47,3 +47,9 @@ print(ix2cat)
 #print("num cats of depth 1: {}".format(len(cats_d1)))
 #print(cats_d1)
 #print("ix2cat: {}".format(list(ix2cat.items())[:len(cats_d1)]))
+
+cs_dleq, ix2cat, ix2depth = generate_categories_by_depth(2, 2)
+
+print(cs_dleq)
+cs_2 = cs_dleq[2]
+print(sorted(cs_2))

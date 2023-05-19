@@ -3,6 +3,13 @@ import torch.distributions
 from torch.utils.tensorboard import SummaryWriter
 from treenode import convert_binary_matrix_to_strtree
 
+DEBUG = False
+
+def printDebug(*args, **kwargs):
+    if DEBUG:
+        print("DEBUG: ", end="")
+        print(*args, **kwargs)
+
 
 class TopModel(nn.Module):
     def __init__(self, inducer, writer:SummaryWriter=None):
@@ -38,6 +45,7 @@ class TopModel(nn.Module):
             )
         else:
             assert self.inducer.model_type == 'word'
+            printDebug("word input: {}".format(word_inp))
             structure_loss, vtree_list, _, _ = self.inducer.forward(
                 word_inp,
                 eval,

@@ -4,6 +4,14 @@ import time
 import logging
 import numpy as np
 
+DEBUG = False
+
+def printDebug(*args, **kwargs):
+    if DEBUG:
+        print("DEBUG: ", end="")
+        print(*args, **kwargs)
+
+
 def slice_tensor(tensor, batch_size, flatten=False):
     if tensor is None:
         return tensor

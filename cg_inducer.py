@@ -122,15 +122,15 @@ class BasicCGInducer(nn.Module):
             self.max_func_depth,
             self.max_arg_depth
         )
-        all_cats = cats_by_max_depth[max_func_depth]
+        all_cats = cats_by_max_depth[self.max_func_depth]
         # res_cats (result cats) are the categories that can be
         # a result from a functor applying to its argument.
         # Since a functor's depth is one greater than the max depth between
         # its argument and result, the max depth of a result
         # is self.max_func_depth-1
-        res_cats = cats_by_max_depth[max_func_depth-1]
+        res_cats = cats_by_max_depth[self.max_func_depth-1]
         # optionally constrain the complexity of argument categories
-        arg_cats = cats_by_max_depth[max_arg_depth]
+        arg_cats = cats_by_max_depth[self.max_arg_depth]
 
         num_all_cats = len(all_cats)
         num_res_cats = len(res_cats)
@@ -211,11 +211,6 @@ class BasicCGInducer(nn.Module):
         num_arg_cats = len(arg_cats)
         num_res_arg_cats = len(res_arg_cats)
 
-        printDebug("all cats:", all_cats)
-        printDebug("res cats:", res_cats)
-        printDebug("arg cats:", arg_cats)
-
-
         # only allow primitive categories to be at the root of the parse
         # tree
         can_be_root = torch.full((num_all_cats,), fill_value=-np.inf)
@@ -257,10 +252,6 @@ class BasicCGInducer(nn.Module):
                 lfunc = CGNode("-b", res, arg)
                 if res not in res_cats or arg not in arg_cats \
                     or lfunc not in all_cats:
-                    printDebug("bad combo:")
-                    printDebug("res:", res)
-                    printDebug("arg:", arg)
-                    printDebug("lfunc:", lfunc)
                     rarg_mask[res_ix, arg_ix] = -QUASI_INF
                     # just a dummy value
                     lfunc_ixs[res_ix, arg_ix] = 0
@@ -271,10 +262,6 @@ class BasicCGInducer(nn.Module):
                 rfunc = CGNode("-a", res, arg)
                 if res not in res_cats or arg not in arg_cats \
                     or rfunc not in all_cats:
-                    printDebug("bad combo:")
-                    printDebug("res:", res)
-                    printDebug("arg:", arg)
-                    printDebug("rfunc:", rfunc)
                     larg_mask[res_ix, arg_ix] = -QUASI_INF
                     # just a dummy value
                     rfunc_ixs[res_ix, arg_ix] = 0
@@ -377,6 +364,8 @@ class BasicCGInducer(nn.Module):
             x = self.emit_prob_model(x, self.nt_emb, set_grammar=set_grammar)
 
         if argmax:
+            printDebug("inducer_x")
+            printDebug(x.flatten()[:20])
             if eval and self.device != self.eval_device:
                 print("Moving model to {}".format(self.eval_device))
                 self.parser.device = self.eval_device

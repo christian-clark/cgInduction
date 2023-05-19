@@ -38,7 +38,16 @@ DEFAULT_CONFIG = {
 #        "max_func_depth": 2,
 
 
+DEBUG = False
+
+def printDebug(*args, **kwargs):
+    if DEBUG:
+        print("DEBUG: ", end="")
+        print(*args, **kwargs)
+
+
 def random_seed(seed_value, use_cuda):
+    printDebug("seeding to value {}".format(seed_value))
     np.random.seed(seed_value) # cpu vars
     torch.manual_seed(seed_value) # cpu  vars
     random.seed(seed_value) # Python
@@ -68,6 +77,7 @@ def setup(eval_only=False):
     if config.getint("seed") < 0: # random seed if seed is set to negative values
         seed = int(int(time.time()) * random.random())
         config["seed"] = str(seed)
+    printDebug("seed is value {}".format(config.getint("seed")))
     random_seed(config.getint("seed"), use_cuda=config["device"]=="cuda")
 
     for handler in logging.root.handlers[:]:
