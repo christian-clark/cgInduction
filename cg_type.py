@@ -111,6 +111,7 @@ def generate_categories_by_depth(
 
 
 def category_from_string(string):
+    printDebug("category:", string)
     OPERATORS = ["-a", "-b"]
     if string[0] == "{":
         assert string[-1] == "}"
@@ -128,6 +129,7 @@ def category_from_string(string):
 
     # recursive case: split string at the operator
     else:
+        printDebug("not primitive")
         paren_count = 0
         split_ix = -1
         for ix, char in enumerate(string):
@@ -136,7 +138,11 @@ def category_from_string(string):
             elif char == "}":
                 paren_count -= 1
             if paren_count == 0:
-                split_ix = ix + 1
+                # find where the operator starts in the string
+                # need to use find method bc there can be multi-character
+                # primtiives like "10"
+                # this assumes that all operators start with "-"
+                split_ix = string.find("-", ix+1)
                 break
         for op in OPERATORS:
             op_l = len(op)
