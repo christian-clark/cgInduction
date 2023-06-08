@@ -1,8 +1,5 @@
-import logging
-import random
-import torch
+import logging, random, torch, gzip, re
 from collections import Counter
-import gzip
 from korean_phonetic_vocab import get_korean_phone_mappings, translate_phone_to_ids
 
 EOS = '<eos>'
@@ -136,8 +133,33 @@ def create_one_batch(x, x_pos, word2id, char2id, oov=OOV, pad=PAD, sort=True, de
             # TODO make this configurable
             #NOUN_TAGS = ["nn", "nns", "nnp", "nnps"]
             #NOUN_TAGS = ["nn", "nns"]
-            NOUN_TAGS = ["np"]
-            if x_pos_ij in NOUN_TAGS:
+            #NOUN_TAGS = ["np"]
+            # chinese (tong)
+            #NOUN_TAGS = ["nn"]
+            # german (leo)
+            #NOUN_TAGS = ["nn-nk"]
+            #NOUN_TAGS = [
+            #    "nn",
+            #    "nn-app",
+            #    "nn-cj",
+            #    "nn-da",
+            #    "nn-dh",
+            #    "nn-hd",
+            #    "nn-mo",
+            #    "nn-nk",
+            #    "nn-nmc",
+            #    "nn-oa",
+            #    "nn-par",
+            #    "nn-pd",
+            #    "nn-pnc",
+            #    "nn-sb",
+            #    "nn-vo"
+            #]
+            #if x_pos_ij in NOUN_TAGS:
+            #    batch_pos[i][j] = 1
+            # korean (jong)
+            pat = re.compile("nbn|ncn|ncpa|ncps|nq")
+            if pat.match(x_pos_ij):
                 batch_pos[i][j] = 1
 
     if char2id is not None:
