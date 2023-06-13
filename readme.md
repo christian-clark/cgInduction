@@ -24,6 +24,7 @@ Sample command:
 
 ```
 python main.py train \
+    model=adamPrim2Depth2 \
     train_sents=adam.senttoks \
     valid_sents=adam.senttoks \
     valid_trees=adam.senttrees \
@@ -36,6 +37,7 @@ Values in the default configuration can be overridden on the command line:
 
 ```
 python main.py train \
+    model=adamPrim2Depth2 \
     train_sents=adam.senttoks \
     valid_sents=adam.senttoks \
     valid_trees=adam.senttrees \
@@ -59,6 +61,8 @@ Command-line overrides take first precedence, followed by the INI file, followed
 Sample INI files can be found in the `ini` directory.
 
 ## Configuration
+- `model`: Output directory name
+- `model_path`: Path to output directory
 - `train_sents`: File with sentences for training, one per line
 - `valid_sents`: File with sentences for evaluation, one per line
 - `valid_trees`: File with annotated trees for evaluation sentences, one per line in Penn Treebank format
@@ -82,4 +86,3 @@ Sample INI files can be found in the `ini` directory.
 - `rnn_hidden_dim`: Hidden dimension of the RNN used in the character-level model
 - `state_dim`: Hidden dimension used in the MLPs
 - `eval_patient`: Maximum number of epochs showing no improvement before training is halted
-- 

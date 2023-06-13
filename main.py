@@ -14,6 +14,7 @@ from cg_inducer import BasicCGInducer
 
 DEFAULT_CONFIG = {
     "DEFAULT": {
+        "model": "my_model",
         "seed": -1,
         "device": "cpu",
         "eval_device": "cpu",
