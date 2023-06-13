@@ -22,20 +22,17 @@ DEFAULT_CONFIG = {
         "learning_rate": 0.0001,
         "batch_size": 2,
         "max_vocab_size": 150000,
-        "valid_size": 2000,
         "eval_steps": 2,
         "eval_start_epoch": 1,
-        "max_epoch": 100,
+        "start_epoch": 0
+        "max_epoch": 20,
         "logfile": "log.txt.gz",
         "model_type": "word",
         "rnn_hidden_dim": 512,
         "state_dim": 64,
         "eval_patient": 5,
-        "start_epoch": 0,
     }
 }
-#        "num_primitives": 3,
-#        "max_func_depth": 2,
 
 
 DEBUG = False
