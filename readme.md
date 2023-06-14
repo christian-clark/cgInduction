@@ -58,7 +58,7 @@ python main.py train config.ini \
 
 Command-line overrides take first precedence, followed by the INI file, followed by `DEFAULT_CONFIG`.
 
-Sample INI files can be found in the `ini` directory.
+Sample INI and category files can be found in the `examples` directory.
 
 ## Configuration
 - `model`: Output directory name
@@ -68,7 +68,7 @@ Sample INI files can be found in the `ini` directory.
 - `valid_trees`: File with annotated trees for evaluation sentences, one per line in Penn Treebank format
 - `num_primitives`: The number of primitives used in induced categories
 - `max_func_depth`: The maximum category depth (described in the paper)
-- `category_list`: As an alternative to providing `num_primitives` and `max_func_depth`, a file containing a predetermined set of categories (one per line) may be provided. If this is provided then `num_primitives` and `max_func_depth` should not be given, and vice versa
+- `category_list`: As an alternative to providing `num_primitives` and `max_func_depth`, a file containing a predetermined set of categories (one per line) may be provided (see examples in the `examples` dir). If this is provided then `num_primitives` and `max_func_depth` should not be given, and vice versa
 - `seed`: Random seed used by `random`, `numpy`, etc. When this is set to -1, a different seed will be chosen for each run
 - `device`: The device (CPU or GPU) to be used by PyTorch during training
 - `eval_device`: The device (CPU or GPU) to be used by PyTorch during testing
