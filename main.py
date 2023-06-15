@@ -25,13 +25,13 @@ DEFAULT_CONFIG = {
         "max_vocab_size": 150000,
         "eval_steps": 2,
         "eval_start_epoch": 1,
-        "start_epoch": 0
+        "start_epoch": 0,
         "max_epoch": 20,
         "logfile": "log.txt.gz",
         "model_type": "word",
         "rnn_hidden_dim": 512,
         "state_dim": 64,
-        "eval_patient": 5,
+        "eval_patient": 5
     }
 }
 
