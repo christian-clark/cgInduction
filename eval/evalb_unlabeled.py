@@ -1,5 +1,6 @@
 import gzip, multiprocessing, re
 import nltk
+import sys
 import argparse
 import logging
 import numpy as np
@@ -324,6 +325,11 @@ def eval_rvm_et_al(args):
         total_predicted_spans_sum = sum(total_predicted_spans)
         total_single_word_sent = sum(total_single_word_sent)
         correct_spans_sum = sum(correct_spans)
+
+        # for PSH calculation
+        #for gold, pred in zip(matching_gold_labels, matching_pred_labels):
+        #    print(" ".join(gold) + "\t" + " ".join(pred))
+
         matching_gold_labels = list(chain.from_iterable(matching_gold_labels))
         matching_pred_labels = list(chain.from_iterable(matching_pred_labels))
         total_gold_spans = np.array(total_gold_spans)
@@ -335,6 +341,12 @@ def eval_rvm_et_al(args):
         matching_label_counts = Counter()
         acc_pred_counts = Counter()
         matching_cross = Counter()
+
+        # for PSR calculation
+        # psr = correct_spans / total_gold_spans_sum
+        # for k in psr:
+        #     print(k)
+        # logging.info('step 6')
 
         # logging.info('step 6')
 
@@ -900,7 +912,7 @@ def nont_heatmap(args):
 
     assert len(gold_trees) == len(pred_trees), "Number of gold trees: {}; number of predicted trees: {}".format(len(gold_trees),
                                                                                                                 len(pred_trees))
-    keep_punc_indicator = 1
+    keep_punc_indicator = 0
 
     with ctx.Pool(PROCESS_NUM) as pool:
         gold_trees = pool.starmap(delete_trace, zip(gold_trees))
@@ -960,10 +972,10 @@ def nont_heatmap(args):
     # prec
     pred_cats = top_pred_cats + ["Other"]
 
-    # mod rec
-    #gold_cats = top_gold_cats + ["Other"]
     # orig rec
     #gold_cats = top_gold_cats
+    # mod rec
+    #gold_cats = top_gold_cats + ["Other"]
 
     # orig prec
     #gold_cats = top_gold_cats + ["NonCross", "Cross"]
@@ -1011,7 +1023,7 @@ def nont_heatmap(args):
 #    for i in range(len(top_gold_cats)):
 #         print(accu_gold_counts[top_gold_cats[i]])
 #         cf_matrix[i][-1] = accu_gold_counts[top_gold_cats[i]] - np.sum(cf_matrix[i])
-#
+
 
    # prec
     for key in accu_cross_counts:
@@ -1047,6 +1059,7 @@ def nont_heatmap(args):
     ax.xaxis.set_tick_params(rotation=-45)
     ax.yaxis.set_tick_params(rotation=0)
     # figure = ax.get_figure()
-    fig.savefig('output.png', dpi=150)
+    #fig.savefig('recall_heatmap.png', dpi=150)
+    fig.savefig('precision_heatmap.png', dpi=150)
 
     return True

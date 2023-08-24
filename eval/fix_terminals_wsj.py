@@ -13,8 +13,8 @@ def single_fix_terms(gold_tree_pred_tree):
     gold_tokens = this_gold_tree.leaves()
     predicted_tokens = this_predicted_tree.leaves()
     if len(gold_tokens) != len(predicted_tokens):
-        print("gold tokens are {}".format(gold_tokens))
-        print("predicted tokens are {}".format(predicted_tokens))
+        #print("gold tokens are {}".format(gold_tokens))
+        #print("predicted tokens are {}".format(predicted_tokens))
         raise Exception
     for j in range(len(gold_tokens)):
         if gold_tokens[j] != predicted_tokens[j]:
