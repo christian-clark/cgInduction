@@ -219,7 +219,7 @@ def get_nonbinary_spans(actions, SHIFT = 0, REDUCE = 1):
       right = stack.pop()
       left = right
       n = 1
-      while stack[-1] is not '(':
+      while stack[-1] != '(':
         left = stack.pop()
         n += 1
       span = (left[0], right[1])
@@ -311,7 +311,7 @@ def get_nonbinary_spans_label(actions, SHIFT = 0, REDUCE = 1):
       right = stack.pop()
       left = right
       n = 1
-      while stack[-1][0] is not '(':
+      while stack[-1][0] != '(':
         left = stack.pop()
         n += 1
       span = (left[0], right[1], stack[-1][1:])
