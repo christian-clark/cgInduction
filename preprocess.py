@@ -11,10 +11,10 @@ EOW = '<eow>'
 LRB = '-LRB-'
 RRB = '-RRB-'
 
-DEBUG = True
+DEBUG = False
 
-def dprint(*args, **kwargs):
-    if DEBUG: 
+def printDebug(*args, **kwargs):
+    if DEBUG:
         print("DEBUG: ", end="")
         print(*args, **kwargs)
 
@@ -132,7 +132,7 @@ def create_one_batch(x, x_pos, word2id, char2id, oov=OOV, pad=PAD, sort=True, de
             # include pronouns?
             # TODO make this configurable
             #NOUN_TAGS = ["nn", "nns", "nnp", "nnps"]
-            #NOUN_TAGS = ["nn", "nns"]
+            NOUN_TAGS = ["nn", "nns"]
             #NOUN_TAGS = ["np"]
             # chinese (tong)
             #NOUN_TAGS = ["nn"]
@@ -155,12 +155,12 @@ def create_one_batch(x, x_pos, word2id, char2id, oov=OOV, pad=PAD, sort=True, de
             #    "nn-sb",
             #    "nn-vo"
             #]
-            #if x_pos_ij in NOUN_TAGS:
-            #    batch_pos[i][j] = 1
-            # korean (jong)
-            pat = re.compile("nbn|ncn|ncpa|ncps|nq")
-            if pat.match(x_pos_ij):
+            if x_pos_ij in NOUN_TAGS:
                 batch_pos[i][j] = 1
+            # korean (jong)
+            #pat = re.compile("nbn|ncn|ncpa|ncps|nq")
+            #if pat.match(x_pos_ij):
+            #    batch_pos[i][j] = 1
 
     if char2id is not None:
         bow_id, eow_id, oov_id, pad_id = char2id.get(BOW, None), char2id.get(EOW, None), char2id.get(oov, None), char2id.get(pad, None)

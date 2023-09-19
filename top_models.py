@@ -11,14 +11,6 @@ def printDebug(*args, **kwargs):
         print(*args, **kwargs)
 
 
-DEBUG = True
-
-def dprint(*args, **kwargs):
-    if DEBUG: 
-        print("DEBUG: ", end="")
-        print(*args, **kwargs)
-
-
 class TopModel(nn.Module):
     def __init__(self, inducer, writer:SummaryWriter=None):
         super(TopModel, self).__init__()

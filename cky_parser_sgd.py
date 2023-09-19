@@ -13,13 +13,6 @@ def printDebug(*args, **kwargs):
 
 
 SMALL_NEGATIVE_NUMBER = -1e8
-DEBUG = True
-
-def dprint(*args, **kwargs):
-    if DEBUG: 
-        print("DEBUG: ", end="")
-        print(*args, **kwargs)
-
 
 def logsumexp_multiply(a, b):
     max_a = a.max()

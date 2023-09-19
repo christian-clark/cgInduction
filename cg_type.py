@@ -82,11 +82,14 @@ def generate_categories_by_depth(
     cs_dleq[0] = {CGNode(str(p)) for p in range(num_primitives)}
     ix2cat = bidict.bidict()
     ix2depth = list()
+    primitive_cats = list()
     # sorting ensures cats will be added to ix2cat in a consistent order
     # across runs (for reproducibility)
     for cat in sorted(cs_dleq[0]):
-        ix2cat[len(ix2cat)] = cat
+        cat_id = len(ix2cat)
+        ix2cat[cat_id] = cat
         ix2depth.append(0)
+        primitive_cats.append(cat_id)
 
     for i in range(max_depth):
         cs_dleqi = cs_dleq[i]
@@ -107,7 +110,7 @@ def generate_categories_by_depth(
         for cat in sorted(cs_deqiplus1):
             ix2cat[len(ix2cat)] = cat
             ix2depth.append(i+1)
-    return cs_dleq, ix2cat, ix2depth
+    return cs_dleq, ix2cat, ix2depth, primitive_cats
 
 
 def category_from_string(string):
@@ -157,7 +160,7 @@ def category_from_string(string):
     assert return_cgnode is not None
     return return_cgnode
 
-
+# TODO sort categories to ensure reproducibility
 def read_categories_from_file(f):
     all_cats = set()
     for l in open(f):
@@ -177,11 +180,15 @@ def read_categories_from_file(f):
         arg_cats.add(arg)
     # categories that can be arguments or results come first in ix2cat
     ix2cat = bidict.bidict()
+    primitive_cats = list()
     res_arg_cats = res_cats.union(arg_cats)
     for cat in res_arg_cats:
-        ix2cat[len(ix2cat)] = cat
+        cat_id = len(ix2cat)
+        if cat.is_primitive():
+            primitive_cats.append(cat_id)
+        ix2cat[cat_id] = cat
     for cat in all_cats - res_arg_cats:
         ix2cat[len(ix2cat)] = cat
     assert len(ix2cat) == len(all_cats)
-    return all_cats, res_cats, arg_cats, ix2cat
+    return all_cats, res_cats, arg_cats, ix2cat, primitive_cats
 

@@ -15,14 +15,6 @@ def printDebug(*args, **kwargs):
         print(*args, **kwargs)
 
 
-DEBUG = True
-
-def dprint(*args, **kwargs):
-    if DEBUG: 
-        print("DEBUG: ", end="")
-        print(*args, **kwargs)
-
-
 class BasicCGInducer(nn.Module):
     def __init__(self, config, num_chars, num_words):
         super(BasicCGInducer, self).__init__()
@@ -33,19 +25,6 @@ class BasicCGInducer(nn.Module):
 
         self.device = config["device"]
         self.eval_device = config["eval_device"]
-
-        if self.model_type == 'char':
-            self.emit_prob_model = CharProbRNN(
-                num_chars,
-                state_dim=self.state_dim,
-                hidden_size=self.rnn_hidden_dim
-            )
-        elif self.model_type == 'word':
-            self.emit_prob_model = WordProbFCFixVocabCompound(
-                num_words, self.state_dim
-            )
-        else:
-            raise ValueError("Model type should be char or word")
 
 
         self.num_primitives = config.getint("num_primitives", fallback=None)
@@ -77,6 +56,25 @@ class BasicCGInducer(nn.Module):
             assert self.arg_depth_penalty is None
             assert self.left_arg_penalty is None
             self.init_cats_from_list()
+
+        if self.model_type == 'char':
+            self.emit_prob_model = CharProbRNN(
+                num_chars,
+                self.primitive_cats,
+                state_dim=self.state_dim,
+                hidden_size=self.rnn_hidden_dim,
+                device=self.device
+            )
+        elif self.model_type == 'word':
+            self.emit_prob_model = WordProbFCFixVocabCompound(
+                num_words,
+                self.state_dim,
+                self.primitive_cats,
+                device=self.device
+            )
+        else:
+            raise ValueError("Model type should be char or word")
+
 
         # CG: "embeddings" for the categories are just one-hot vectors
         # these are used for result categories
@@ -125,11 +123,12 @@ class BasicCGInducer(nn.Module):
 
 
     def init_cats_by_depth(self):
-        cats_by_max_depth, ix2cat, ix2depth = generate_categories_by_depth(
-            self.num_primitives,
-            self.max_func_depth,
-            self.max_arg_depth
-        )
+        cats_by_max_depth, ix2cat, ix2depth, primitive_cats = \
+            generate_categories_by_depth(
+                self.num_primitives,
+                self.max_func_depth,
+                self.max_arg_depth
+            )
         all_cats = cats_by_max_depth[self.max_func_depth]
         # res_cats (result cats) are the categories that can be
         # a result from a functor applying to its argument.
@@ -184,6 +183,7 @@ class BasicCGInducer(nn.Module):
         self.num_res_cats = num_res_cats
         self.num_arg_cats = num_arg_cats
         self.ix2cat = ix2cat
+        self.primitive_cats = primitive_cats
 
         if self.arg_depth_penalty:
             print("CEC ix2depth: {}".format(ix2depth))
@@ -208,9 +208,8 @@ class BasicCGInducer(nn.Module):
 
 
     def init_cats_from_list(self):
-        all_cats, res_cats, arg_cats, ix2cat = read_categories_from_file(
-            self.cats_list
-        )
+        all_cats, res_cats, arg_cats, ix2cat, primitive_cats = \
+            read_categories_from_file(self.cats_list)
 
         res_arg_cats = res_cats.union(arg_cats)
 
@@ -282,6 +281,7 @@ class BasicCGInducer(nn.Module):
         self.num_res_cats = num_res_arg_cats
         self.num_arg_cats = num_res_arg_cats
         self.ix2cat = ix2cat
+        self.primitive_cats = primitive_cats
         self.lfunc_ixs = lfunc_ixs.to(self.device)
         self.rfunc_ixs = rfunc_ixs.to(self.device)
         self.larg_mask = larg_mask.to(self.device)
