@@ -70,17 +70,44 @@ class BasicCGInducer(nn.Module):
             assert self.left_arg_penalty is None
             self.init_cats_from_list()
 
+        self.init_predicates(config)
+
+        # expand so each syntactic category appears P times in a row
+        # (P is number of predicates)
+        self.root_mask = self.root_mask.repeat_interleave(
+            self.num_all_preds, dim=0
+        )
+        self.lfunc_ixs = self.lfunc_ixs.repeat_interleave(
+            self.num_all_preds, dim=0
+        ).repeat_interleave(
+            self.num_all_preds, dim=1
+        )
+        self.rfunc_ixs = self.rfunc_ixs.repeat_interleave(
+            self.num_all_preds, dim=0
+        ).repeat_interleave(
+            self.num_all_preds, dim=1
+        )
+
         # CG: "embeddings" for the categories are just one-hot vectors
         # these are used for result categories
-        self.fake_emb = nn.Parameter(torch.eye(self.num_res_cats))
+        self.fake_emb = nn.Parameter(
+            torch.eye(self.num_res_cats*self.num_all_preds)
+        )
         state_dim = self.state_dim
         # actual embeddings are used to calculate split scores
         # (i.e. prob of terminal vs nonterminal)
         self.nt_emb = nn.Parameter(
             torch.randn(self.num_all_cats, state_dim)
         )
+        # embeddings for predicate-category pairs
+        self.predcat_emb = nn.Parameter(
+            torch.randn(self.num_all_preds*self.num_all_cats, state_dim)
+        )
         # maps res_cat to arg_cat x {arg_on_L, arg_on_R}
-        self.rule_mlp = nn.Linear(self.num_res_cats, 2*self.num_arg_cats)
+        self.rule_mlp = nn.Linear(
+            self.num_res_cats*self.num_all_preds,
+            2*self.num_arg_cats*self.num_all_preds
+        )
 
         # example of manually seeding weights (for troubleshooting)
         # note: weight dims are (out_feats, in_feats)
@@ -93,7 +120,9 @@ class BasicCGInducer(nn.Module):
 #        self.rule_mlp.weight = nn.Parameter(fake_weights)
 
         self.root_emb = nn.Parameter(torch.eye(1)).to(self.device)
-        self.root_mlp = nn.Linear(1, self.num_all_cats).to(self.device)
+        self.root_mlp = nn.Linear(
+            1, self.num_all_cats*self.num_all_preds
+        ).to(self.device)
 
         # decides terminal or nonterminal
         self.split_mlp = nn.Sequential(
@@ -112,6 +141,7 @@ class BasicCGInducer(nn.Module):
             qall=self.num_all_cats,
             qres=self.num_res_cats,
             qarg=self.num_arg_cats,
+            num_preds=self.num_all_preds,
             device=self.device
         )
 
@@ -192,11 +222,12 @@ class BasicCGInducer(nn.Module):
 
         self.lfunc_ixs = lfunc_ixs.to(self.device)
         self.rfunc_ixs = rfunc_ixs.to(self.device)
-        self.root_mask = can_be_root.to(self.device)
         # these masks are for blocking impossible pairs of argument
         # and result categories -- not needed here
         self.larg_mask = None
         self.rarg_mask = None
+        self.root_mask = can_be_root.to(self.device)
+
 
 
     def init_cats_from_list(self):
@@ -235,6 +266,7 @@ class BasicCGInducer(nn.Module):
             num_res_arg_cats, num_res_arg_cats, dtype=torch.int64
         )
 
+        # TODO fix these so they include predicates too
         # used to block impossible argument-result pairs with arg on left
         larg_mask = torch.zeros(
             num_res_arg_cats, num_res_arg_cats, dtype=torch.float32
@@ -280,6 +312,29 @@ class BasicCGInducer(nn.Module):
         self.rarg_mask = rarg_mask.to(self.device)
         self.root_mask = can_be_root.to(self.device)
 
+
+    def init_predicates(self, config):
+        all_predicates = dict()
+        noun_predicates = set()
+        for l in open(config["noun_predicates"]):
+            noun_predicates.add(l.strip())
+        all_predicates["noun"] = noun_predicates
+        adj_predicates = set()
+        for l in open(config["adj_predicates"]):
+            adj_predicates.add(l.strip())
+        all_predicates["adj"] = adj_predicates
+        vintrans_predicates = set()
+        for l in open(config["vintrans_predicates"]):
+            vintrans_predicates.add(l.strip())
+        all_predicates["vintrans"] = vintrans_predicates
+        vtrans_predicates = set()
+        for l in open(config["vtrans_predicates"]):
+            vtrans_predicates.add(l.strip())
+        all_predicates["vtrans"] = vtrans_predicates
+
+        num_all_preds = sum(len(all_predicates[k]) for k in all_predicates)
+        self.num_all_preds = num_all_preds
+
         
     def forward(self, x, eval=False, argmax=False, use_mean=False, indices=None, set_grammar=True, return_ll=True, **kwargs):
         # x : batch x n
@@ -290,6 +345,7 @@ class BasicCGInducer(nn.Module):
             num_all_cats = self.num_all_cats
             num_res_cats = self.num_res_cats
             num_arg_cats = self.num_arg_cats
+            num_preds = self.num_all_preds
 
             # dim: Qfunc
             root_scores = F.log_softmax(
@@ -324,11 +380,11 @@ class BasicCGInducer(nn.Module):
             rule_scores = F.log_softmax(mlp_out, dim=1)
             #rule_scores = F.log_softmax(self.rule_mlp(fake_emb)+self.depth_penalty, dim=1)
             # dim: Qres x Qarg
-            rule_scores_larg = rule_scores[:, :num_arg_cats]
+            rule_scores_larg = rule_scores[:, :num_arg_cats*num_preds]
             #print("CEC rule scores larg")
             #print(rule_scores_larg)
             # dim: Qres x Qarg
-            rule_scores_rarg = rule_scores[:, num_arg_cats:]
+            rule_scores_rarg = rule_scores[:, num_arg_cats*num_preds:]
             #print("CEC rule scores rarg")
             #print(rule_scores_rarg)
 
@@ -343,10 +399,16 @@ class BasicCGInducer(nn.Module):
             #full_G_larg = rule_scores_larg + split_scores[:, 0][..., None]
             #full_G_rarg = rule_scores_rarg + split_scores[:, 0][..., None]
             # dim: Qres x Qarg
-            full_G_larg = rule_scores_larg \
-                          + split_scores[:num_res_cats, 0][..., None]
-            full_G_rarg = rule_scores_rarg \
-                          + split_scores[:num_res_cats, 0][..., None]
+
+            split_expanded = torch.repeat_interleave(
+                split_scores[:num_res_cats, 0], self.num_all_preds
+            )
+            split_expanded = split_expanded[..., None]
+
+            #full_G_larg = rule_scores_larg \
+            #              + split_scores[:num_res_cats, 0][..., None]
+            full_G_larg = rule_scores_larg + split_expanded
+            full_G_rarg = rule_scores_rarg + split_expanded
 
             self.parser.set_models(
                 full_p0,
@@ -358,7 +420,8 @@ class BasicCGInducer(nn.Module):
 
 
         if self.model_type == 'word':
-            x = self.emit_prob_model(x, self.nt_emb, set_grammar=set_grammar)
+            x = self.emit_prob_model(x, self.predcat_emb, set_grammar=set_grammar)
+        # TODO add predicate embedding to word model
         else:
             assert self.model_type == "char"
             x = self.emit_prob_model(x, self.nt_emb, set_grammar=set_grammar)

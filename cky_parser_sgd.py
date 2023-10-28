@@ -5,7 +5,7 @@ import torch.nn.functional as F
 import numpy as np
 
 
-DEBUG = False
+DEBUG = True
 def printDebug(*args, **kwargs):
     if DEBUG:
         print("DEBUG: ", end="")
@@ -24,7 +24,7 @@ def logsumexp_multiply(a, b):
 class BatchCKYParser:
     def __init__(
         self, ix2cat, lfunc_ixs, rfunc_ixs, larg_mask, rarg_mask, qall, qres,
-        qarg, device="cpu"
+        qarg, num_preds, device="cpu"
     ):
         self.D = -1
         # TODO is this correct?
@@ -41,6 +41,7 @@ class BatchCKYParser:
         self.Qall = qall
         self.Qres = qres
         self.Qarg = qarg
+        self.num_preds = num_preds
         self.this_sent_len = -1
         self.counter = 0
         self.vocab_prob_list = []
@@ -62,6 +63,8 @@ class BatchCKYParser:
 
 
     def marginal(self, sents, viterbi_flag=False, only_viterbi=False, sent_indices=None):
+        printDebug("computing marginal")
+        printDebug("sents shape", sents.shape)
         self.sent_indices = sent_indices
 
         if not only_viterbi:
@@ -113,10 +116,10 @@ class BatchCKYParser:
         # left chart is the left right triangle of the chart, the top row is the lexical items, and the bottom cell is the
         #  top cell. The right chart is the left chart pushed against the right edge of the chart. The chart is a square.
         self.left_chart = torch.zeros(
-            (sent_len, sent_len, batch_size, self.Qall)
+            (sent_len, sent_len, batch_size, self.Qall*self.num_preds)
         ).float().to(self.device)
         self.right_chart = torch.zeros(
-            (sent_len, sent_len, batch_size, self.Qall)
+            (sent_len, sent_len, batch_size, self.Qall*self.num_preds)
         ).float().to(self.device)
         self.get_lexis_prob(sents, self.left_chart)
         self.right_chart[0] = self.left_chart[0]
@@ -142,15 +145,17 @@ class BatchCKYParser:
             # on the right
             # dim: height x imax x batch_size x Qall x Qarg
             children_score_larg = torch.logsumexp(
-                b[...,None,:self.Qarg] + c[...,None], dim=0
+                b[...,None,:self.Qarg*self.num_preds] + c[...,None], dim=0
             )
 
             # probability of functor i on the left followed by argument j
             # on the right
             # dim: height x imax x batch_size x Qall x Qarg
             children_score_rarg = torch.logsumexp(
-                b[...,None] + c[...,None,:self.Qarg], dim=0
+                b[...,None] + c[...,None,:self.Qarg*self.num_preds], dim=0
             )
+
+            printDebug("children_score_rarg shape:", children_score_rarg.shape)
 
             # probability that parent category i branches into left argument j
             # and right functor i-aj
@@ -164,6 +169,7 @@ class BatchCKYParser:
             scores_rarg = self.log_G_rarg.to(self.device).repeat(
                 imax, batch_size, 1, 1
             )
+            printDebug("scores_rarg shape:", scores_rarg.shape)
 
             # rfunc_ixs[..., i, j] tells the index of the right-child functor
             # going with parent cat i, larg cat j
@@ -183,6 +189,7 @@ class BatchCKYParser:
             # block impossible result-argument combinations
             if self.larg_mask is not None:
                 children_score_larg += self.larg_mask
+            printDebug("children_score_larg gathered shape:", children_score_larg.shape)
 
             # rearrange children_score_rarg to index by result (parent)
             # and argument rather than functor and argument
@@ -206,6 +213,8 @@ class BatchCKYParser:
             # dim: imax x batch_size x Qres
             y1 = torch.logsumexp(y1, dim=3)
 
+            printDebug("y1 shape:", y1.shape)
+
             # before this, y1 just contains probabilities for the Qres
             # result categories.
             # But left_chart and right_chart maintain all Qall
@@ -215,7 +224,7 @@ class BatchCKYParser:
             # left_chart and right_chart to all -inf
             QUASI_INF = 10000000.
             padding = torch.full(
-                (imax, batch_size, self.Qall-self.Qres),
+                (imax, batch_size, (self.Qall-self.Qres)*self.num_preds),
                 fill_value=-QUASI_INF
             )
             padding = padding.to(self.device)
@@ -252,10 +261,10 @@ class BatchCKYParser:
         batch_size = 1
         sent_len = self.this_sent_len
         self.left_chart = torch.zeros(
-            (sent_len, sent_len, batch_size, self.Qall)
+            (sent_len, sent_len, batch_size, self.Qall*self.num_preds)
         ).float().to(self.device)
         self.right_chart = torch.zeros(
-            (sent_len, sent_len, batch_size, self.Qall)
+            (sent_len, sent_len, batch_size, self.Qall*self.num_preds)
         ).float().to(self.device)
         backtrack_chart = {}
         self.get_lexis_prob(sent, self.left_chart)
@@ -278,7 +287,7 @@ class BatchCKYParser:
             # probability of argument i on the left followed by functor j
             # on the right
             # dim: height x imax x batch_size x Qall x Qarg
-            children_score_larg = b[...,None,:self.Qarg]+c[...,None]
+            children_score_larg = b[...,None,:self.Qarg*self.num_preds]+c[...,None]
 
             printDebug("children score larg:")
             printDebug(children_score_larg.flatten()[:20])
@@ -286,7 +295,7 @@ class BatchCKYParser:
             # probability of functor i on the left followed by argument j
             # on the right
             # dim: height x imax x batch_size x Qall x Qarg
-            children_score_rarg = b[...,None]+c[...,None,:self.Qarg]
+            children_score_rarg = b[...,None]+c[...,None,:self.Qarg*self.num_preds]
 
             # probability that parent category i branches into left argument j
             # and right functor i-aj
@@ -347,26 +356,29 @@ class BatchCKYParser:
             combined_scores_larg = combined_scores_larg.permute(1,2,3,0,4)
             # dim: imax x batch_size x Qres x height*Qarg
             combined_scores_larg = combined_scores_larg.contiguous().view(
-                imax, batch_size, self.Qres, -1
+                imax, batch_size, self.Qres*self.num_preds, -1
             )
             combined_scores_rarg = combined_scores_rarg.permute(1,2,3,0,4)
             # dim: imax x batch_size x Qres x height*Qarg
             combined_scores_rarg = combined_scores_rarg.contiguous().view(
-                imax, batch_size, self.Qres, -1
+                imax, batch_size, self.Qres*self.num_preds, -1
             )
+
+            printDebug("vit inside combined scores rarg shape:", combined_scores_rarg.shape)
 
             # dim: imax x batch_size x Qres
             lmax_kbc, largmax_kbc = torch.max(combined_scores_larg, dim=3)
             rmax_kbc, rargmax_kbc = torch.max(combined_scores_rarg, dim=3)
 
             # dim: imax x batch_size x Qres
-            l_ks = torch.div(largmax_kbc, self.Qarg, rounding_mode="floor") \
+            l_ks = torch.div(largmax_kbc, self.Qarg*self.num_preds, rounding_mode="floor") \
                    + torch.arange(1, imax+1)[:, None, None]. to(self.device)
             # dim: imax x batch_size x Qres
-            l_bs = largmax_kbc % self.Qarg
+            l_bs = largmax_kbc % (self.Qarg*self.num_preds)
 
             # dim: imax x batch_size x Qres x 1
-            l_bs_reshape = l_bs.view(imax, batch_size, self.Qres, 1)
+            l_bs_reshape = l_bs.view(imax, batch_size, self.Qres*self.num_preds, 1)
+            printDebug("l bs reshape size:", l_bs_reshape.shape)
 
             # dim: imax x batch_size x Qres x Qarg
             rfunc_ixs = self.rfunc_ixs.repeat(
@@ -380,13 +392,13 @@ class BatchCKYParser:
             l_kbc = torch.stack([l_ks, l_bs, l_cs], dim=0)
 
             # dim: imax x batch_size x Qres
-            r_ks = torch.div(rargmax_kbc, self.Qarg, rounding_mode="floor") \
+            r_ks = torch.div(rargmax_kbc, self.Qarg*self.num_preds, rounding_mode="floor") \
                    + torch.arange(1, imax+1)[:, None, None]. to(self.device)
             # dim: imax x batch_size x Qres
-            r_cs = rargmax_kbc % self.Qarg
+            r_cs = rargmax_kbc % (self.Qarg*self.num_preds)
 
             # dim: imax x batch_size x Qres x 1
-            r_cs_reshape = r_cs.view(imax, batch_size, self.Qres, 1)
+            r_cs_reshape = r_cs.view(imax, batch_size, self.Qres*self.num_preds, 1)
 
             # dim: imax x batch_size x Qres x Qarg
             lfunc_ixs = self.lfunc_ixs.repeat(
@@ -414,7 +426,7 @@ class BatchCKYParser:
             # left_chart and right_chart to all -inf
             QUASI_INF = 10000000.
             padding = torch.full(
-                (imax, batch_size, self.Qall-self.Qres),
+                (imax, batch_size, (self.Qall-self.Qres)*self.num_preds),
                 fill_value=-QUASI_INF
             )
             padding = padding.to(self.device)
@@ -460,7 +472,7 @@ class BatchCKYParser:
         # rules = []
         assert self.this_sent_len > 0, "must call inside pass first!"
 
-        A_cat = top_A[sent_index].item()
+        A_cat = top_A[sent_index].item() // self.num_preds
         A_cat_str = str(self.ix2cat[A_cat])
         
         assert not ( torch.isnan(A_ll[sent_index]) or torch.isinf(A_ll[sent_index]) or A_ll[sent_index].item() == 0 ), \
@@ -480,6 +492,8 @@ class BatchCKYParser:
             k_b_c = backtrack_chart[ij_diff][ working_node.i, sent_index,
                                                         working_node.cat]
             split_point, b, c = k_b_c[0].item(), k_b_c[1].item(), k_b_c[2].item()
+            b = b // self.num_preds
+            c = c // self.num_preds
             b_str = str(self.ix2cat[b])
             c_str = str(self.ix2cat[c])
 
@@ -512,6 +526,7 @@ class BatchCKYParser:
 
 
     def get_lexis_prob(self, sent_embs, left_chart):
+        printDebug("sent embs shape", sent_embs.shape)
         sent_embs = sent_embs.transpose(1, 0) # sentlen, batch, emb
         if isinstance(self.log_lexis, torch.distributions.Distribution):
             sent_embs = sent_embs.unsqueeze(-2) # sentlen, batch, 1, emb
@@ -524,7 +539,14 @@ class BatchCKYParser:
             lexis_probs = self.log_lexis.log_prob(sent_embs) # sentlen, batch, terms
         # print('lexical', lexis_probs)
         if self.pcfg_split is not None:
-            lexis_probs = lexis_probs + self.pcfg_split[:, 1] # sentlen, batch, p
+            printDebug("lexis probs shape", lexis_probs.shape)
+            printDebug("pcfg split shape", self.pcfg_split.shape)
+            # Pr(Term=1) only depends on category, not predicate
+            pcfg_split_expanded = torch.repeat_interleave(
+                self.pcfg_split[:, 1], self.num_preds
+            )
+            printDebug("expanded pcfg split shape", pcfg_split_expanded.shape)
+            lexis_probs = lexis_probs + pcfg_split_expanded # sentlen, batch, p
             full_lexis_probs = lexis_probs
         else:
             full_lexis_probs = torch.full((lexis_probs.shape[0], lexis_probs.shape[1], self.K), SMALL_NEGATIVE_NUMBER,

@@ -95,14 +95,14 @@ class WordProbFCFixVocabCompound(nn.Module):
                                        ResidualLayer(state_dim, state_dim),
                                        nn.Linear(state_dim, num_words))
 
-    def forward(self, words, cat_embs, set_grammar=True):
+    def forward(self, words, predcat_embs, set_grammar=True):
         if set_grammar:
-            dist = nn.functional.log_softmax(self.fc(cat_embs), 1).t() # vocab, cats
+            dist = nn.functional.log_softmax(self.fc(predcat_embs), 1).t() # vocab, predcats
             self.dist = dist
         else:
             pass
         word_indices = words[:, 1:-1]
 
-        logprobs = self.dist[word_indices, :] # sent, word, cats; get rid of bos and eos
+        logprobs = self.dist[word_indices, :] # sent, word, predcats; get rid of bos and eos
         return logprobs
 

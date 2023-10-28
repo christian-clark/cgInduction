@@ -192,7 +192,6 @@ def setup(eval_only=False):
 
     logging.info('Char embedding size: {0}'.format(len(char_lexicon)))
 
-
     # training batch size for the pre training is 8 times larger than in eval
     train = preprocess.create_batches(
         train_sents,
@@ -237,6 +236,9 @@ def setup(eval_only=False):
     )
     logging.info(
         "Examples of categories: {}".format(list(parser.ix2cat.items())[:100])
+    )
+    logging.info(
+        "Total number of predicates: {}".format(parser.num_all_preds)
     )
     model = TopModel(parser, writer)
 

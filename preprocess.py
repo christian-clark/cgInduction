@@ -270,3 +270,4 @@ def read_markers(fname):
             marker = int(l.strip().split(' ')[1])
             markers.append(marker)
     return markers
+
