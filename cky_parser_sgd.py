@@ -23,7 +23,7 @@ def logsumexp_multiply(a, b):
 # for dense grammar only! ie D must be -1
 class BatchCKYParser:
     def __init__(
-        self, ix2cat, lfunc_ixs, rfunc_ixs, larg_mask, rarg_mask, qall, qres,
+        self, ix2cat, predicates, lfunc_ixs, rfunc_ixs, larg_mask, rarg_mask, qall, qres,
         qarg, num_preds, device="cpu"
     ):
         self.D = -1
@@ -34,6 +34,7 @@ class BatchCKYParser:
         self.p0 = None
         # self.viterbi_chart = np.zeros_like(self.chart, dtype=np.float32)
         self.ix2cat = ix2cat
+        self.predicates = predicates
         self.lfunc_ixs = lfunc_ixs
         self.rfunc_ixs = rfunc_ixs
         self.larg_mask = larg_mask
@@ -53,10 +54,12 @@ class BatchCKYParser:
 
     # TODO rename pcfg_split
     def set_models(
-            self, p0, expansion_larg, expansion_rarg, emission, pcfg_split=None
+            self, p0, expansion_larg, expansion_rarg, mod_scores, arg1_scores, emission, pcfg_split=None
         ):
         self.log_G_larg = expansion_larg
         self.log_G_rarg = expansion_rarg
+        self.mod_scores = mod_scores
+        self.arg1_scores = arg1_scores
         self.log_p0 = p0
         self.log_lexis = emission
         self.pcfg_split = pcfg_split
@@ -165,26 +168,96 @@ class BatchCKYParser:
             )
             # probability that parent category i branches into left functor i-bj
             # and right argument j
-            # dim: height x imax x batch_size x Qres x Qarg
+            # dim:  imax x batch_size x Qres x Qarg
             scores_rarg = self.log_G_rarg.to(self.device).repeat(
                 imax, batch_size, 1, 1
             )
             printDebug("scores_rarg shape:", scores_rarg.shape)
 
+            scores_pred_arg1 = self.arg1_scores.to(self.device).repeat(
+                imax, batch_size, self.Qres, self.Qarg
+            )
+            printDebug("scores_pred_arg1 shape:", scores_pred_arg1.shape)
+            # add arg1 scores everywhere except where res category equals
+            # arg category. The mask blocks those locations
+            arg1_mask = torch.ones(scores_pred_arg1.shape).to(self.device)
+            assert self.Qres == self.Qarg
+            for i in range(self.Qres):
+                ixmin = i * self.num_preds
+                ixmax = (i+1) * self.num_preds
+                arg1_mask[..., ixmin:ixmax, ixmin:ixmax] = 0
+            printDebug("arg1_mask:", arg1_mask)
+            scores_pred_arg1 *= arg1_mask
+
+            printDebug("masked scores_pred_arg1 sample:", scores_pred_arg1[0, 0, self.num_preds:2*self.num_preds, self.num_preds:2*self.num_preds])
+            scores_larg += scores_pred_arg1
+            scores_rarg += scores_pred_arg1
+
+            # TODO re-add
+#            scores_pred_mod = self.mod_scores.to(self.device).repeat(
+#                imax, batch_size, 1, 1
+#            )
+#            printDebug("scores_pred_mod shape:", scores_pred_mod.shape)
+#            printDebug("scores_pred_mod:", scores_pred_mod)
+#            # NOTE: this assumes that Qres and Qarg use the same indexing
+#            # (so category res[i] is the same as category arg[i])
+#            # the chunks of scores_larg that are looped over are those where
+#            # the res and arg categories are the same, i.e. where a modifier
+#            # is attached
+#            assert self.Qres == self.Qarg
+#            for i in range(self.Qres):
+#                ixmin = i * self.num_preds
+#                ixmax = (i+1) * self.num_preds
+#                scores_larg[..., ixmin:ixmax, ixmin:ixmax] += scores_pred_mod
+#                scores_rarg[..., ixmin:ixmax, ixmin:ixmax] += scores_pred_mod
+
+            # dim: Qres x Qarg
+            # expand to select the correct predicate, not just category
+            rfunc_ixs_expanded = self.rfunc_ixs.repeat_interleave(
+                self.num_preds, dim=0
+            ).repeat_interleave(
+                self.num_preds, dim=1
+            )
+            rfunc_ixs_expanded *= self.num_preds
+            # dim: Qres x Qarg
+            pred_ixs = torch.arange(self.num_preds).tile(
+                self.Qarg*self.num_preds, self.Qres
+            ).t().to(self.device)
+            rfunc_ixs_expanded += pred_ixs
+            printDebug("pred_ixs", pred_ixs)
+            printDebug("rfunc_ixs_expanded", rfunc_ixs_expanded)
+
+            # dim: imax x batch_size x Qres x Qarg
+            rfunc_ixs_expanded = rfunc_ixs_expanded.repeat(imax, batch_size, 1, 1)
+
+            # dim: Qres x Qarg
+            # expand to select the correct predicate, not just category
+            lfunc_ixs_expanded = self.lfunc_ixs.repeat_interleave(
+                self.num_preds, dim=0
+            ).repeat_interleave(
+                self.num_preds, dim=1
+            )
+            lfunc_ixs_expanded *= self.num_preds
+            lfunc_ixs_expanded += pred_ixs
+            printDebug("lfunc_ixs_expanded", lfunc_ixs_expanded)
+
+            # dim: imax x batch_size x Qres x Qarg
+            lfunc_ixs_expanded = lfunc_ixs_expanded.repeat(imax, batch_size, 1, 1)
+
             # rfunc_ixs[..., i, j] tells the index of the right-child functor
             # going with parent cat i, larg cat j
             # dim: imax x batch_size x Qres x Qarg
-            rfunc_ixs = self.rfunc_ixs.repeat(imax, batch_size, 1, 1)
+            #rfunc_ixs = self.rfunc_ixs.repeat(imax, batch_size, 1, 1)
             # lfunc_ixs[..., i, j] tells the index of the left-child functor
             # going with parent cat i, rarg cat j
             # dim: imax x batch_size x Qres x Qarg
-            lfunc_ixs = self.lfunc_ixs.repeat(imax, batch_size, 1, 1)
+            #lfunc_ixs = self.lfunc_ixs.repeat(imax, batch_size, 1, 1)
 
             # rearrange children_score_larg to index by result (parent)
             # and argument rather than functor and argument
             # dim: height x imax x batch_size x Qres x Qarg
             children_score_larg = torch.gather(
-                children_score_larg, dim=2, index=rfunc_ixs
+                children_score_larg, dim=2, index=rfunc_ixs_expanded
             )
             # block impossible result-argument combinations
             if self.larg_mask is not None:
@@ -195,7 +268,7 @@ class BatchCKYParser:
             # and argument rather than functor and argument
             # dim: height x imax x batch_size x Qres x Qarg
             children_score_rarg = torch.gather(
-                children_score_rarg, dim=2, index=lfunc_ixs
+                children_score_rarg, dim=2, index=lfunc_ixs_expanded
             )
             # block impossible result-argument combinations
             if self.rarg_mask is not None:
@@ -289,9 +362,6 @@ class BatchCKYParser:
             # dim: height x imax x batch_size x Qall x Qarg
             children_score_larg = b[...,None,:self.Qarg*self.num_preds]+c[...,None]
 
-            printDebug("children score larg:")
-            printDebug(children_score_larg.flatten()[:20])
-
             # probability of functor i on the left followed by argument j
             # on the right
             # dim: height x imax x batch_size x Qall x Qarg
@@ -309,34 +379,99 @@ class BatchCKYParser:
             scores_rarg = self.log_G_rarg.to(self.device).repeat(
                 height, imax, batch_size, 1, 1
             )
+        
+            scores_pred_arg1 = self.arg1_scores.to(self.device).repeat(
+                height, imax, batch_size, self.Qres, self.Qarg
+            )
+            printDebug("scores_pred_arg1 viterbi shape:", scores_pred_arg1.shape)
+            # add arg1 scores everywhere except where res category equals
+            # arg category. The mask blocks those locations
+            arg1_mask = torch.ones(scores_pred_arg1.shape).to(self.device)
+            assert self.Qres == self.Qarg
+            for i in range(self.Qres):
+                ixmin = i * self.num_preds
+                ixmax = (i+1) * self.num_preds
+                arg1_mask[..., ixmin:ixmax, ixmin:ixmax] = 0
+            scores_pred_arg1 *= arg1_mask
+
+            scores_larg += scores_pred_arg1
+            scores_rarg += scores_pred_arg1
+
+            # TODO re-add
+#            scores_pred_mod = self.mod_scores.to(self.device).repeat(
+#                height, imax, batch_size, 1, 1
+#            )
+#            printDebug("scores_pred_mod viterbi shape:", scores_pred_mod.shape)
+#            # NOTE: this assumes that Qres and Qarg use the same indexing
+#            # (so category res[i] is the same as category arg[i])
+#            # the chunks of scores_larg that are looped over are those where
+#            # the res and arg categories are the same, i.e. where a modifier
+#            # is attached
+#            assert self.Qres == self.Qarg
+#            for i in range(self.Qres):
+#                ixmin = i * self.num_preds
+#                ixmax = (i+1) * self.num_preds
+#                scores_larg[..., ixmin:ixmax, ixmin:ixmax] += scores_pred_mod
+#                scores_rarg[..., ixmin:ixmax, ixmin:ixmax] += scores_pred_mod
+#
+
+            # dim: Qres x Qarg
+            # expand to select the correct predicate, not just category
+            rfunc_ixs_expanded = self.rfunc_ixs.repeat_interleave(
+                self.num_preds, dim=0
+            ).repeat_interleave(
+                self.num_preds, dim=1
+            )
+            rfunc_ixs_expanded *= self.num_preds
+            # dim: Qres x Qarg
+            pred_ixs = torch.arange(self.num_preds).tile(
+                self.Qarg*self.num_preds, self.Qres
+            ).t().to(self.device)
+            rfunc_ixs_expanded += pred_ixs
+            printDebug("pred_ixs", pred_ixs)
+            printDebug("rfunc_ixs_expanded", rfunc_ixs_expanded)
+
+            # dim: height x imax x batch_size x Qres x Qarg
+            rfunc_ixs_expanded = rfunc_ixs_expanded.repeat(height, imax, batch_size, 1, 1)
+
+            # dim: Qres x Qarg
+            # expand to select the correct predicate, not just category
+            lfunc_ixs_expanded = self.lfunc_ixs.repeat_interleave(
+                self.num_preds, dim=0
+            ).repeat_interleave(
+                self.num_preds, dim=1
+            )
+            lfunc_ixs_expanded *= self.num_preds
+            lfunc_ixs_expanded += pred_ixs
+            printDebug("lfunc_ixs_expanded", lfunc_ixs_expanded)
+
+            # dim: height x imax x batch_size x Qres x Qarg
+            lfunc_ixs_expanded = lfunc_ixs_expanded.repeat(height, imax, batch_size, 1, 1)
 
             # rfunc_ixs[..., i, j] tells the index of the right-child functor
             # going with parent cat i, larg cat j
             # dim: height x imax x batch_size x Qres x Qarg
-            rfunc_ixs = self.rfunc_ixs.repeat(height, imax, batch_size, 1, 1)
+            #rfunc_ixs = self.rfunc_ixs.repeat(height, imax, batch_size, 1, 1)
             # lfunc_ixs[..., i, j] tells the index of the left-child functor
             # going with parent cat i, rarg cat j
             # dim: imax x batch_size x Qres x Qarg
-            lfunc_ixs = self.lfunc_ixs.repeat(height, imax, batch_size, 1, 1)
+            #lfunc_ixs = self.lfunc_ixs.repeat(height, imax, batch_size, 1, 1)
 
             # rearrange children_score_larg to index by result (parent)
             # and argument rather than functor and argument
             # dim: height x imax x batch_size x Qres x Qarg
             children_score_larg = torch.gather(
-                children_score_larg, dim=3, index=rfunc_ixs
+                children_score_larg, dim=3, index=rfunc_ixs_expanded
             )
             # block impossible result-argument combinations
             if self.larg_mask is not None:
                 children_score_larg += self.larg_mask
 
-            printDebug("children score larg after gather:")
-            printDebug(children_score_larg.flatten()[:20])
-
             # rearrange children_score_rarg to index by result (parent)
             # and argument rather than functor and argument
             # dim: height x imax x batch_size x Qres x Qarg
             children_score_rarg = torch.gather(
-                children_score_rarg, dim=3, index=lfunc_ixs
+                children_score_rarg, dim=3, index=lfunc_ixs_expanded
             )
             # block impossible result-argument combinations
             if self.rarg_mask is not None:
@@ -364,8 +499,6 @@ class BatchCKYParser:
                 imax, batch_size, self.Qres*self.num_preds, -1
             )
 
-            printDebug("vit inside combined scores rarg shape:", combined_scores_rarg.shape)
-
             # dim: imax x batch_size x Qres
             lmax_kbc, largmax_kbc = torch.max(combined_scores_larg, dim=3)
             rmax_kbc, rargmax_kbc = torch.max(combined_scores_rarg, dim=3)
@@ -378,18 +511,24 @@ class BatchCKYParser:
 
             # dim: imax x batch_size x Qres x 1
             l_bs_reshape = l_bs.view(imax, batch_size, self.Qres*self.num_preds, 1)
-            printDebug("l bs reshape size:", l_bs_reshape.shape)
 
             # dim: imax x batch_size x Qres x Qarg
-            rfunc_ixs = self.rfunc_ixs.repeat(
-                imax, batch_size, 1, 1
-            )
+#            rfunc_ixs = self.rfunc_ixs.repeat(
+#                imax, batch_size, 1, 1
+#            )
+
+            l_b_cats = l_bs_reshape // self.Qres
+            printDebug("v l_b_cats", l_b_cats)
 
             # dim: imax x batch_size x Qres
+            #l_cs = torch.gather(rfunc_ixs, index=l_bs_reshape, dim=3).squeeze(dim=3)
+            rfunc_ixs = rfunc_ixs_expanded[0]
             l_cs = torch.gather(rfunc_ixs, index=l_bs_reshape, dim=3).squeeze(dim=3)
  
-            # dim: 3 x imax x batch_size x Qarg
+            # dim: 3 x imax x batch_size x res
             l_kbc = torch.stack([l_ks, l_bs, l_cs], dim=0)
+            printDebug("v l_kbc shape", l_kbc.shape)
+            printDebug("v l_kbc", l_kbc)
 
             # dim: imax x batch_size x Qres
             r_ks = torch.div(rargmax_kbc, self.Qarg*self.num_preds, rounding_mode="floor") \
@@ -401,15 +540,19 @@ class BatchCKYParser:
             r_cs_reshape = r_cs.view(imax, batch_size, self.Qres*self.num_preds, 1)
 
             # dim: imax x batch_size x Qres x Qarg
-            lfunc_ixs = self.lfunc_ixs.repeat(
-                imax, batch_size, 1, 1
-            )
+#            lfunc_ixs = self.lfunc_ixs.repeat(
+#                imax, batch_size, 1, 1
+#            )
 
             # dim: imax x batch_size x Qres
+            #r_bs = torch.gather(lfunc_ixs, index=r_cs_reshape, dim=3).squeeze(dim=3)
+            lfunc_ixs = lfunc_ixs_expanded[0]
             r_bs = torch.gather(lfunc_ixs, index=r_cs_reshape, dim=3).squeeze(dim=3)
 
             # dim: 3 x imax x batch_size x Qres
             r_kbc = torch.stack([r_ks, r_bs, r_cs], dim=0)
+            printDebug("v r_kbc shape", r_kbc.shape)
+            printDebug("v r_kbc", r_kbc)
 
             # dim: 2 x 3 x imax x batch_size x Qres
             lr_kbc = torch.stack([l_kbc, r_kbc], dim=0)
@@ -457,12 +600,15 @@ class BatchCKYParser:
         nodes_list = []
         sent_len = self.this_sent_len
         topnode_pdf = self.left_chart[sent_len-1, 0]
+        printDebug("topnode_pdf", topnode_pdf)
         if max_cats is not None:
             max_cats = max_cats.squeeze()
             max_cats = max_cats.tolist()
 
         # draw the top node
         p_topnode = topnode_pdf + self.log_p0
+        printDebug("log_p0", self.log_p0)
+        printDebug("p_topnode", p_topnode)
         A_ll, top_A = torch.max(p_topnode, dim=-1)
         # top_A = top_A.squeeze()
         # A_ll = A_ll.squeeze()
@@ -472,14 +618,18 @@ class BatchCKYParser:
         # rules = []
         assert self.this_sent_len > 0, "must call inside pass first!"
 
-        A_cat = top_A[sent_index].item() // self.num_preds
-        A_cat_str = str(self.ix2cat[A_cat])
+        a = top_A[sent_index].item()
+        printDebug("a ix", a)
+        a_cat = a // self.num_preds
+        a_pred = a % self.num_preds
+        #A_cat_str = str(self.ix2cat[A_cat])
+        a_str = "{}:{}".format(self.ix2cat[a_cat], self.predicates[a_pred])
         
         assert not ( torch.isnan(A_ll[sent_index]) or torch.isinf(A_ll[sent_index]) or A_ll[sent_index].item() == 0 ), \
             'something wrong with viterbi parsing. {}'.format(A_ll[sent_index])
 
         # prepare the downward sampling pass
-        top_node = Node(A_cat, A_cat_str, 0, sent_len, self.D, self.K)
+        top_node = Node(a, a_str, 0, sent_len, self.D, self.K)
         if sent_len > 1:
             expanding_nodes.append(top_node)
         else:
@@ -492,10 +642,16 @@ class BatchCKYParser:
             k_b_c = backtrack_chart[ij_diff][ working_node.i, sent_index,
                                                         working_node.cat]
             split_point, b, c = k_b_c[0].item(), k_b_c[1].item(), k_b_c[2].item()
-            b = b // self.num_preds
-            c = c // self.num_preds
-            b_str = str(self.ix2cat[b])
-            c_str = str(self.ix2cat[c])
+            printDebug("b ix", b)
+            printDebug("c ix", c)
+            b_cat = b // self.num_preds
+            b_pred = b % self.num_preds
+            c_cat = c // self.num_preds
+            c_pred = c % self.num_preds
+            #b_str = str(self.ix2cat[b])
+            b_str = "{}:{}".format(self.ix2cat[b_cat], self.predicates[b_pred])
+            #c_str = str(self.ix2cat[c])
+            c_str = "{}:{}".format(self.ix2cat[c_cat], self.predicates[c_pred])
 
             expanded_nodes.append(working_node)
             node_b = Node(b, b_str, working_node.i, split_point, self.D, self.K, parent=working_node)

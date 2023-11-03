@@ -1,4 +1,5 @@
 import torch, bidict, random, numpy as np, torch.nn.functional as F
+from collections import defaultdict
 from torch import nn
 from cky_parser_sgd import BatchCKYParser
 from char_coding_models import CharProbRNN, ResidualLayer, \
@@ -7,12 +8,27 @@ from cg_type import CGNode, generate_categories_by_depth, \
     read_categories_from_file
 
 QUASI_INF = 10000000.
-DEBUG = False
+DEBUG = True
 
 def printDebug(*args, **kwargs):
     if DEBUG:
         print("DEBUG: ", end="")
         print(*args, **kwargs)
+
+
+class Predicate:
+    def __init__(self, word, pos):
+        self.word = word
+        self.pos = pos
+
+    def __str__(self):
+        return "{}_{}".format(self.word, self.pos)
+
+    def __repr__(self):
+        return str(self)
+
+    def __lt__(self, other):
+        return str(self) < str(other)
 
 
 class BasicCGInducer(nn.Module):
@@ -75,23 +91,30 @@ class BasicCGInducer(nn.Module):
         # expand so each syntactic category appears P times in a row
         # (P is number of predicates)
         self.root_mask = self.root_mask.repeat_interleave(
-            self.num_all_preds, dim=0
+            self.num_preds, dim=0
         )
-        self.lfunc_ixs = self.lfunc_ixs.repeat_interleave(
-            self.num_all_preds, dim=0
-        ).repeat_interleave(
-            self.num_all_preds, dim=1
-        )
-        self.rfunc_ixs = self.rfunc_ixs.repeat_interleave(
-            self.num_all_preds, dim=0
-        ).repeat_interleave(
-            self.num_all_preds, dim=1
-        )
+        # pretty sure this is wrong
+#        self.lfunc_ixs = self.lfunc_ixs.repeat_interleave(
+#            self.num_preds, dim=0
+#        ).repeat_interleave(
+#            self.num_preds, dim=1
+#        )
+#        self.rfunc_ixs = self.rfunc_ixs.repeat_interleave(
+#            self.num_preds, dim=0
+#        ).repeat_interleave(
+#            self.num_preds, dim=1
+#        )
+#
+        printDebug("lfunc_ixs:")
+        printDebug(self.lfunc_ixs)
+
+        printDebug("rfunc_ixs:")
+        printDebug(self.rfunc_ixs)
 
         # CG: "embeddings" for the categories are just one-hot vectors
         # these are used for result categories
         self.fake_emb = nn.Parameter(
-            torch.eye(self.num_res_cats*self.num_all_preds)
+            torch.eye(self.num_res_cats*self.num_preds)
         )
         state_dim = self.state_dim
         # actual embeddings are used to calculate split scores
@@ -101,12 +124,12 @@ class BasicCGInducer(nn.Module):
         )
         # embeddings for predicate-category pairs
         self.predcat_emb = nn.Parameter(
-            torch.randn(self.num_all_preds*self.num_all_cats, state_dim)
+            torch.randn(self.num_preds*self.num_all_cats, state_dim)
         )
         # maps res_cat to arg_cat x {arg_on_L, arg_on_R}
         self.rule_mlp = nn.Linear(
-            self.num_res_cats*self.num_all_preds,
-            2*self.num_arg_cats*self.num_all_preds
+            self.num_res_cats*self.num_preds,
+            2*self.num_arg_cats*self.num_preds
         )
 
         # example of manually seeding weights (for troubleshooting)
@@ -121,7 +144,7 @@ class BasicCGInducer(nn.Module):
 
         self.root_emb = nn.Parameter(torch.eye(1)).to(self.device)
         self.root_mlp = nn.Linear(
-            1, self.num_all_cats*self.num_all_preds
+            1, self.num_all_cats*self.num_preds
         ).to(self.device)
 
         # decides terminal or nonterminal
@@ -134,6 +157,7 @@ class BasicCGInducer(nn.Module):
 
         self.parser = BatchCKYParser(
             ix2cat=self.ix2cat,
+            predicates=self.predicates,
             lfunc_ixs=self.lfunc_ixs,
             rfunc_ixs=self.rfunc_ixs,
             larg_mask=self.larg_mask,
@@ -141,7 +165,7 @@ class BasicCGInducer(nn.Module):
             qall=self.num_all_cats,
             qres=self.num_res_cats,
             qarg=self.num_arg_cats,
-            num_preds=self.num_all_preds,
+            num_preds=self.num_preds,
             device=self.device
         )
 
@@ -314,26 +338,122 @@ class BasicCGInducer(nn.Module):
 
 
     def init_predicates(self, config):
-        all_predicates = dict()
-        noun_predicates = set()
-        for l in open(config["noun_predicates"]):
-            noun_predicates.add(l.strip())
-        all_predicates["noun"] = noun_predicates
-        adj_predicates = set()
-        for l in open(config["adj_predicates"]):
-            adj_predicates.add(l.strip())
-        all_predicates["adj"] = adj_predicates
-        vintrans_predicates = set()
-        for l in open(config["vintrans_predicates"]):
-            vintrans_predicates.add(l.strip())
-        all_predicates["vintrans"] = vintrans_predicates
-        vtrans_predicates = set()
-        for l in open(config["vtrans_predicates"]):
-            vtrans_predicates.add(l.strip())
-        all_predicates["vtrans"] = vtrans_predicates
+        predicates = set()
+        #assoc_mod = dict()
+        #assoc_arg1 = dict()
 
-        num_all_preds = sum(len(all_predicates[k]) for k in all_predicates)
-        self.num_all_preds = num_all_preds
+        # used to create the matrices of scores for modifiers and arguments
+        entries_mod = list()
+        entries_arg1 = list()
+
+        f_assoc = open(config["predicate_associations"])
+        f_assoc.readline()
+        for l in f_assoc:
+            pred1, pred1number, pred2, pred2number, score = l.strip().split()
+            pred1number = int(pred1number)
+            pred2number = int(pred2number)
+            score = float(score)
+            predicates.add(pred1)
+            predicates.add(pred2)
+            if pred1number == 0 and pred2number == 0:
+                entries_mod.append((pred1, pred2, score))
+                #if pred1 not in assoc_mod:
+                #    assoc_mod[pred1] = defaultdict(lambda:-QUASI_INF)
+                #assoc_mod[pred1][pred2] = score
+            elif pred1number == 0 and pred2number == 1:
+                # NOTE: reverse the order of the predicates so that the thing
+                # taking the argument comes first
+                entries_arg1.append((pred2, pred1, score))
+                #if pred1 not in assoc_arg1:
+                #    assoc_arg1[pred1] = defaultdict(lambda:-QUASI_INF)
+                #assoc_arg1[pred1][pred2] = score
+            else:
+                raise NotImplementedError(
+                    "only modifiers and first arguments are currently supported. offending line: {}".format(l)
+                )
+        predicates = bidict.bidict(enumerate(sorted(predicates)))
+        predicates[len(predicates)] = "<UNK>"
+
+        # TODO re-add mod_mat
+#        # mod_mat[i, j] is the probability that predicate j cooccurs with predicate i as a modifier
+#        #mod_mat = torch.full((len(predicates), len(predicates)), fill_value=-np.inf)
+#        mod_mat = torch.full((len(predicates), len(predicates)), fill_value=-QUASI_INF)
+#
+#        for r, c, score in entries_mod:
+#            i = predicates.inverse[r]
+#            j = predicates.inverse[c]
+#            mod_mat[i, j] = score
+#
+#        # allow everything to associate with UNK
+#        mod_mat[:, -1] = 0
+#        mod_mat[-1, :] = 0
+#        mod_mat = mod_mat.log_softmax(dim=1)
+#
+#        printDebug("mod_mat:")
+#        printDebug(mod_mat)
+#
+        # arg1_mat[i, j] is the probability that predicate j is the first argument of predicate i
+        #arg1_mat = torch.full((len(predicates), len(predicates)), fill_value=-np.inf)
+        arg1_mat = torch.full((len(predicates), len(predicates)), fill_value=-QUASI_INF)
+        for r, c, score in entries_arg1:
+            i = predicates.inverse[r]
+            j = predicates.inverse[c]
+            arg1_mat[i, j] = score
+
+        # allow everything to associate with UNK
+        # TODO this should be changed so that nouns and adjectives can't take
+        # arguments, even <UNK>. Add a bottom symbol as another predicate?
+        arg1_mat[:, -1] = 0
+        arg1_mat[-1, :] = 0
+        arg1_mat = arg1_mat.log_softmax(dim=1)
+
+        self.predicates = predicates
+        self.num_preds = len(predicates)
+#        self.mod_mat = mod_mat
+        self.mod_mat = None
+        self.arg1_mat = arg1_mat
+#        num_all_preds = len(noun_predicates + adj_predicates + \
+#            vintrans_predicates + vtrans_predicates)
+#        self.noun_predicates = noun_predicates
+#        self.adj_predicates = adj_predicates
+#        self.vintrans_predicates = vintrans_predicates
+#        self.vtrans_predicates = vtrans_predicates
+#        self.num_all_preds = num_all_preds
+
+#        all_predicates = dict()
+#        noun_predicates = set()
+#        for l in open(config["noun_predicates"]):
+#            p = l.strip()
+#            noun_predicates.add(Predicate(p, "N"))
+#        all_predicates["noun"] = noun_predicates
+#        adj_predicates = set()
+#        for l in open(config["adj_predicates"]):
+#            p = l.strip()
+#            adj_predicates.add(Predicate(p, "ADJ"))
+#        all_predicates["adj"] = adj_predicates
+#        vintrans_predicates = set()
+#        for l in open(config["vintrans_predicates"]):
+#            p = l.strip()
+#            vintrans_predicates.add(Predicate(p, "VI"))
+#        all_predicates["vintrans"] = vintrans_predicates
+#        vtrans_predicates = set()
+#        for l in open(config["vtrans_predicates"]):
+#            p = l.strip()
+#            vtrans_predicates.add(Predicate(p, "VT"))
+#        all_predicates["vtrans"] = vtrans_predicates
+#
+#        noun_predicates = list(sorted(noun_predicates))
+#        adj_predicates = list(sorted(adj_predicates))
+#        vintrans_predicates = list(sorted(vintrans_predicates))
+#        vtrans_predicates = list(sorted(vtrans_predicates))
+#
+#        num_all_preds = len(noun_predicates + adj_predicates + \
+#            vintrans_predicates + vtrans_predicates)
+#        self.noun_predicates = noun_predicates
+#        self.adj_predicates = adj_predicates
+#        self.vintrans_predicates = vintrans_predicates
+#        self.vtrans_predicates = vtrans_predicates
+#        self.num_all_preds = num_all_preds
 
         
     def forward(self, x, eval=False, argmax=False, use_mean=False, indices=None, set_grammar=True, return_ll=True, **kwargs):
@@ -345,7 +465,7 @@ class BasicCGInducer(nn.Module):
             num_all_cats = self.num_all_cats
             num_res_cats = self.num_res_cats
             num_arg_cats = self.num_arg_cats
-            num_preds = self.num_all_preds
+            num_preds = self.num_preds
 
             # dim: Qfunc
             root_scores = F.log_softmax(
@@ -401,7 +521,7 @@ class BasicCGInducer(nn.Module):
             # dim: Qres x Qarg
 
             split_expanded = torch.repeat_interleave(
-                split_scores[:num_res_cats, 0], self.num_all_preds
+                split_scores[:num_res_cats, 0], self.num_preds
             )
             split_expanded = split_expanded[..., None]
 
@@ -414,6 +534,8 @@ class BasicCGInducer(nn.Module):
                 full_p0,
                 full_G_larg,
                 full_G_rarg,
+                self.mod_mat,
+                self.arg1_mat,
                 self.emission,
                 pcfg_split=split_scores
             )

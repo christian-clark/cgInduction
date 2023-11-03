@@ -238,7 +238,16 @@ def setup(eval_only=False):
         "Examples of categories: {}".format(list(parser.ix2cat.items())[:100])
     )
     logging.info(
-        "Total number of predicates: {}".format(parser.num_all_preds)
+        "Total number of predicates: {}".format(parser.num_preds)
+    )
+    logging.info(
+        "Predicate examples: {}".format(list(parser.predicates.items())[:100])
+    )
+    logging.info(
+        "mod mat: {}".format(parser.mod_mat)
+    )
+    logging.info(
+        "arg1 mat: {}".format(parser.arg1_mat)
     )
     model = TopModel(parser, writer)
 
