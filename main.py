@@ -37,7 +37,6 @@ DEFAULT_CONFIG = {
 
 
 DEBUG = False
-
 def printDebug(*args, **kwargs):
     if DEBUG:
         print("DEBUG: ", end="")
@@ -152,7 +151,8 @@ def setup(eval_only=False):
             valid_trees = [t.strip() for t in f]
 
     logging.info('training instance: {}, training tokens after division: {}.'.format(len(train_sents), sum([len(s) - 1 for s in train_sents])))
-    logging.info('valid instance: {}, valid tokens: {}.'.format(len(valid_sents), sum([len(s) - 1 for s in valid_sents])))
+    if valid_sents:
+        logging.info('valid instance: {}, valid tokens: {}.'.format(len(valid_sents), sum([len(s) - 1 for s in valid_sents])))
 
     word_lexicon = bidict.bidict()
 
@@ -243,12 +243,7 @@ def setup(eval_only=False):
     logging.info(
         "Predicate examples: {}".format(list(parser.predicates.items())[:100])
     )
-    logging.info(
-        "mod mat: {}".format(parser.mod_mat)
-    )
-    logging.info(
-        "arg1 mat: {}".format(parser.arg1_mat)
-    )
+
     model = TopModel(parser, writer)
 
     logging.info(str(model))

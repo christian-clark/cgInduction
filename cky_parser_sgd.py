@@ -54,12 +54,13 @@ class BatchCKYParser:
 
     # TODO rename pcfg_split
     def set_models(
-            self, p0, expansion_larg, expansion_rarg, mod_scores, arg1_scores, emission, pcfg_split=None
+            self, p0, expansion_larg, expansion_rarg, associations, 
+            operator_ixs, emission, pcfg_split=None
         ):
         self.log_G_larg = expansion_larg
         self.log_G_rarg = expansion_rarg
-        self.mod_scores = mod_scores
-        self.arg1_scores = arg1_scores
+        self.associations = associations
+        self.operator_ixs = operator_ixs
         self.log_p0 = p0
         self.log_lexis = emission
         self.pcfg_split = pcfg_split
@@ -158,8 +159,6 @@ class BatchCKYParser:
                 b[...,None] + c[...,None,:self.Qarg*self.num_preds], dim=0
             )
 
-            printDebug("children_score_rarg shape:", children_score_rarg.shape)
-
             # probability that parent category i branches into left argument j
             # and right functor i-aj
             # dim: imax x batch_size x Qres x Qarg
@@ -172,28 +171,54 @@ class BatchCKYParser:
             scores_rarg = self.log_G_rarg.to(self.device).repeat(
                 imax, batch_size, 1, 1
             )
-            printDebug("scores_rarg shape:", scores_rarg.shape)
 
-            scores_pred_arg1 = self.arg1_scores.to(self.device).repeat(
-                imax, batch_size, self.Qres, self.Qarg
-            )
-            printDebug("scores_pred_arg1 shape:", scores_pred_arg1.shape)
-            # add arg1 scores everywhere except where res category equals
-            # arg category. The mask blocks those locations
-            arg1_mask = torch.ones(scores_pred_arg1.shape).to(self.device)
-            assert self.Qres == self.Qarg
-            for i in range(self.Qres):
-                ixmin = i * self.num_preds
-                ixmax = (i+1) * self.num_preds
-                arg1_mask[..., ixmin:ixmax, ixmin:ixmax] = 0
-            printDebug("arg1_mask:", arg1_mask)
-            scores_pred_arg1 *= arg1_mask
+            # dim: imax x batch_size x Qres x Qarg
+            op_ixs_expanded = self.operator_ixs.repeat_interleave(
+                self.num_preds, dim=0
+            ).repeat_interleave(
+                self.num_preds, dim=1
+            ).repeat(imax, batch_size, 1, 1).unsqueeze(dim=-1).to(self.device)
 
-            printDebug("masked scores_pred_arg1 sample:", scores_pred_arg1[0, 0, self.num_preds:2*self.num_preds, self.num_preds:2*self.num_preds])
-            scores_larg += scores_pred_arg1
-            scores_rarg += scores_pred_arg1
+            printDebug("op_ixs_expanded shape", op_ixs_expanded.shape)
+            printDebug("op_ixs_expanded", op_ixs_expanded)
 
-            # TODO re-add
+            associations_expanded = self.associations.repeat(
+                imax, batch_size, self.Qres, self.Qarg, 1
+            ).to(self.device)
+
+            printDebug("associations_expanded shape", associations_expanded.shape)
+            printDebug("associations_expanded", associations_expanded)
+
+            predicate_scores = torch.gather(
+                input=associations_expanded, dim=-1, index=op_ixs_expanded
+            ).squeeze(dim=-1)
+            printDebug("predicate_scores shape", predicate_scores.shape)
+            printDebug("scores_larg shape", scores_larg.shape)
+
+            scores_larg += predicate_scores
+            scores_rarg += predicate_scores
+
+#            arg1_scores = self.associations[..., 1]
+#
+#            scores_pred_arg1 = arg1_scores.to(self.device).repeat(
+#                imax, batch_size, self.Qres, self.Qarg
+#            )
+#            printDebug("scores_pred_arg1 shape:", scores_pred_arg1.shape)
+#            # add arg1 scores everywhere except where res category equals
+#            # arg category. The mask blocks those locations
+#            arg1_mask = torch.ones(scores_pred_arg1.shape).to(self.device)
+#            assert self.Qres == self.Qarg
+#            for i in range(self.Qres):
+#                ixmin = i * self.num_preds
+#                ixmax = (i+1) * self.num_preds
+#                arg1_mask[..., ixmin:ixmax, ixmin:ixmax] = 0
+#
+#            #scores_pred_arg1 *= arg1_mask
+#
+#            scores_larg += scores_pred_arg1
+#            scores_rarg += scores_pred_arg1
+
+
 #            scores_pred_mod = self.mod_scores.to(self.device).repeat(
 #                imax, batch_size, 1, 1
 #            )
@@ -224,8 +249,6 @@ class BatchCKYParser:
                 self.Qarg*self.num_preds, self.Qres
             ).t().to(self.device)
             rfunc_ixs_expanded += pred_ixs
-            printDebug("pred_ixs", pred_ixs)
-            printDebug("rfunc_ixs_expanded", rfunc_ixs_expanded)
 
             # dim: imax x batch_size x Qres x Qarg
             rfunc_ixs_expanded = rfunc_ixs_expanded.repeat(imax, batch_size, 1, 1)
@@ -239,7 +262,6 @@ class BatchCKYParser:
             )
             lfunc_ixs_expanded *= self.num_preds
             lfunc_ixs_expanded += pred_ixs
-            printDebug("lfunc_ixs_expanded", lfunc_ixs_expanded)
 
             # dim: imax x batch_size x Qres x Qarg
             lfunc_ixs_expanded = lfunc_ixs_expanded.repeat(imax, batch_size, 1, 1)
@@ -262,7 +284,6 @@ class BatchCKYParser:
             # block impossible result-argument combinations
             if self.larg_mask is not None:
                 children_score_larg += self.larg_mask
-            printDebug("children_score_larg gathered shape:", children_score_larg.shape)
 
             # rearrange children_score_rarg to index by result (parent)
             # and argument rather than functor and argument
@@ -285,8 +306,6 @@ class BatchCKYParser:
             # marginalize over arg categories
             # dim: imax x batch_size x Qres
             y1 = torch.logsumexp(y1, dim=3)
-
-            printDebug("y1 shape:", y1.shape)
 
             # before this, y1 just contains probabilities for the Qres
             # result categories.
@@ -327,8 +346,6 @@ class BatchCKYParser:
 
     def compute_viterbi_inside(self, sent):
         printDebug("computing viterbi inside")
-        printDebug("input:")
-        printDebug(sent.flatten()[:20])
 
         self.this_sent_len = sent.shape[1]
         batch_size = 1
@@ -344,7 +361,6 @@ class BatchCKYParser:
         self.right_chart[0] = self.left_chart[0]
 
         for ij_diff in range(1, sent_len):
-            printDebug("ij_diff: {}".format(ij_diff))
             imin = 0
             imax = sent_len - ij_diff
             jmin = ij_diff
@@ -379,25 +395,45 @@ class BatchCKYParser:
             scores_rarg = self.log_G_rarg.to(self.device).repeat(
                 height, imax, batch_size, 1, 1
             )
+
+            # dim: height x imax x batch_size x Qres x Qarg
+            op_ixs_expanded = self.operator_ixs.repeat_interleave(
+                self.num_preds, dim=0
+            ).repeat_interleave(
+                self.num_preds, dim=1
+            ).repeat(height, imax, batch_size, 1, 1).unsqueeze(dim=-1).to(self.device)
+
+            associations_expanded = self.associations.repeat(
+                height, imax, batch_size, self.Qres, self.Qarg, 1
+            ).to(self.device)
+
+            predicate_scores = torch.gather(
+                input=associations_expanded, dim=-1, index=op_ixs_expanded
+            ).squeeze(dim=-1)
+            printDebug("v predicate_scores shape", predicate_scores.shape)
+            printDebug("v scores_larg shape", scores_larg.shape)
+
+            scores_larg += predicate_scores
+            scores_rarg += predicate_scores
         
-            scores_pred_arg1 = self.arg1_scores.to(self.device).repeat(
-                height, imax, batch_size, self.Qres, self.Qarg
-            )
-            printDebug("scores_pred_arg1 viterbi shape:", scores_pred_arg1.shape)
-            # add arg1 scores everywhere except where res category equals
-            # arg category. The mask blocks those locations
-            arg1_mask = torch.ones(scores_pred_arg1.shape).to(self.device)
-            assert self.Qres == self.Qarg
-            for i in range(self.Qres):
-                ixmin = i * self.num_preds
-                ixmax = (i+1) * self.num_preds
-                arg1_mask[..., ixmin:ixmax, ixmin:ixmax] = 0
-            scores_pred_arg1 *= arg1_mask
-
-            scores_larg += scores_pred_arg1
-            scores_rarg += scores_pred_arg1
-
-            # TODO re-add
+#            arg1_scores = self.associations[..., 1]
+#            scores_pred_arg1 = arg1_scores.to(self.device).repeat(
+#                height, imax, batch_size, self.Qres, self.Qarg
+#            )
+#            # add arg1 scores everywhere except where res category equals
+#            # arg category. The mask blocks those locations
+#            arg1_mask = torch.ones(scores_pred_arg1.shape).to(self.device)
+#            assert self.Qres == self.Qarg
+#            for i in range(self.Qres):
+#                ixmin = i * self.num_preds
+#                ixmax = (i+1) * self.num_preds
+#                arg1_mask[..., ixmin:ixmax, ixmin:ixmax] = 0
+#
+#            #scores_pred_arg1 *= arg1_mask
+#
+#            scores_larg += scores_pred_arg1
+#            scores_rarg += scores_pred_arg1
+#
 #            scores_pred_mod = self.mod_scores.to(self.device).repeat(
 #                height, imax, batch_size, 1, 1
 #            )
@@ -428,8 +464,6 @@ class BatchCKYParser:
                 self.Qarg*self.num_preds, self.Qres
             ).t().to(self.device)
             rfunc_ixs_expanded += pred_ixs
-            printDebug("pred_ixs", pred_ixs)
-            printDebug("rfunc_ixs_expanded", rfunc_ixs_expanded)
 
             # dim: height x imax x batch_size x Qres x Qarg
             rfunc_ixs_expanded = rfunc_ixs_expanded.repeat(height, imax, batch_size, 1, 1)
@@ -443,7 +477,6 @@ class BatchCKYParser:
             )
             lfunc_ixs_expanded *= self.num_preds
             lfunc_ixs_expanded += pred_ixs
-            printDebug("lfunc_ixs_expanded", lfunc_ixs_expanded)
 
             # dim: height x imax x batch_size x Qres x Qarg
             lfunc_ixs_expanded = lfunc_ixs_expanded.repeat(height, imax, batch_size, 1, 1)
@@ -518,7 +551,6 @@ class BatchCKYParser:
 #            )
 
             l_b_cats = l_bs_reshape // self.Qres
-            printDebug("v l_b_cats", l_b_cats)
 
             # dim: imax x batch_size x Qres
             #l_cs = torch.gather(rfunc_ixs, index=l_bs_reshape, dim=3).squeeze(dim=3)
@@ -527,8 +559,6 @@ class BatchCKYParser:
  
             # dim: 3 x imax x batch_size x res
             l_kbc = torch.stack([l_ks, l_bs, l_cs], dim=0)
-            printDebug("v l_kbc shape", l_kbc.shape)
-            printDebug("v l_kbc", l_kbc)
 
             # dim: imax x batch_size x Qres
             r_ks = torch.div(rargmax_kbc, self.Qarg*self.num_preds, rounding_mode="floor") \
@@ -551,8 +581,6 @@ class BatchCKYParser:
 
             # dim: 3 x imax x batch_size x Qres
             r_kbc = torch.stack([r_ks, r_bs, r_cs], dim=0)
-            printDebug("v r_kbc shape", r_kbc.shape)
-            printDebug("v r_kbc", r_kbc)
 
             # dim: 2 x 3 x imax x batch_size x Qres
             lr_kbc = torch.stack([l_kbc, r_kbc], dim=0)
@@ -600,15 +628,12 @@ class BatchCKYParser:
         nodes_list = []
         sent_len = self.this_sent_len
         topnode_pdf = self.left_chart[sent_len-1, 0]
-        printDebug("topnode_pdf", topnode_pdf)
         if max_cats is not None:
             max_cats = max_cats.squeeze()
             max_cats = max_cats.tolist()
 
         # draw the top node
         p_topnode = topnode_pdf + self.log_p0
-        printDebug("log_p0", self.log_p0)
-        printDebug("p_topnode", p_topnode)
         A_ll, top_A = torch.max(p_topnode, dim=-1)
         # top_A = top_A.squeeze()
         # A_ll = A_ll.squeeze()
@@ -619,7 +644,6 @@ class BatchCKYParser:
         assert self.this_sent_len > 0, "must call inside pass first!"
 
         a = top_A[sent_index].item()
-        printDebug("a ix", a)
         a_cat = a // self.num_preds
         a_pred = a % self.num_preds
         #A_cat_str = str(self.ix2cat[A_cat])
@@ -642,8 +666,6 @@ class BatchCKYParser:
             k_b_c = backtrack_chart[ij_diff][ working_node.i, sent_index,
                                                         working_node.cat]
             split_point, b, c = k_b_c[0].item(), k_b_c[1].item(), k_b_c[2].item()
-            printDebug("b ix", b)
-            printDebug("c ix", c)
             b_cat = b // self.num_preds
             b_pred = b % self.num_preds
             c_cat = c // self.num_preds
@@ -682,7 +704,6 @@ class BatchCKYParser:
 
 
     def get_lexis_prob(self, sent_embs, left_chart):
-        printDebug("sent embs shape", sent_embs.shape)
         sent_embs = sent_embs.transpose(1, 0) # sentlen, batch, emb
         if isinstance(self.log_lexis, torch.distributions.Distribution):
             sent_embs = sent_embs.unsqueeze(-2) # sentlen, batch, 1, emb
@@ -695,13 +716,10 @@ class BatchCKYParser:
             lexis_probs = self.log_lexis.log_prob(sent_embs) # sentlen, batch, terms
         # print('lexical', lexis_probs)
         if self.pcfg_split is not None:
-            printDebug("lexis probs shape", lexis_probs.shape)
-            printDebug("pcfg split shape", self.pcfg_split.shape)
             # Pr(Term=1) only depends on category, not predicate
             pcfg_split_expanded = torch.repeat_interleave(
                 self.pcfg_split[:, 1], self.num_preds
             )
-            printDebug("expanded pcfg split shape", pcfg_split_expanded.shape)
             lexis_probs = lexis_probs + pcfg_split_expanded # sentlen, batch, p
             full_lexis_probs = lexis_probs
         else:

@@ -2,8 +2,7 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 
-DEBUG = True
-
+DEBUG = False
 def printDebug(*args, **kwargs):
     if DEBUG:
         print("DEBUG: ", end="")

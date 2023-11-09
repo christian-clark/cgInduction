@@ -8,8 +8,8 @@ from cg_type import CGNode, generate_categories_by_depth, \
     read_categories_from_file
 
 QUASI_INF = 10000000.
-DEBUG = True
 
+DEBUG = True
 def printDebug(*args, **kwargs):
     if DEBUG:
         print("DEBUG: ", end="")
@@ -85,6 +85,35 @@ class BasicCGInducer(nn.Module):
             assert self.arg_depth_penalty is None
             assert self.left_arg_penalty is None
             self.init_cats_from_list()
+
+
+        # operator_ixs[res, arg] tells what kind of operation
+        # occurs when arg and res<op>arg combine to produce arg.
+        # Current options are modification (operator 0), first
+        # argument attachment (operator 1), or second argument attachment
+        # (operator 2)
+        operator_ixs = torch.empty(
+            self.num_res_cats, self.num_arg_cats,
+            dtype=torch.int64
+        )
+        
+        for res_ix in range(self.num_res_cats):
+            for arg_ix in range(self.num_arg_cats):
+                res = self.ix2cat[res_ix]
+                arg = self.ix2cat[arg_ix]
+                if res == arg:
+                    operator_ixs[res_ix, arg_ix] = 0
+                elif res.is_primitive():
+                    operator_ixs[res_ix, arg_ix] = 1
+                else:
+                    # for now we only allow functor categories
+                    # that take up to two arguments
+                    # TODO generalize
+                    assert res.res_arg[0].is_primitive()
+                    operator_ixs[res_ix, arg_ix] = 2
+
+        printDebug("operator_ixs", operator_ixs)
+        self.operator_ixs = operator_ixs
 
         self.init_predicates(config)
 
@@ -345,8 +374,10 @@ class BasicCGInducer(nn.Module):
         # used to create the matrices of scores for modifiers and arguments
         entries_mod = list()
         entries_arg1 = list()
+        entries_arg2 = list()
 
         f_assoc = open(config["predicate_associations"])
+        # header
         f_assoc.readline()
         for l in f_assoc:
             pred1, pred1number, pred2, pred2number, score = l.strip().split()
@@ -357,103 +388,69 @@ class BasicCGInducer(nn.Module):
             predicates.add(pred2)
             if pred1number == 0 and pred2number == 0:
                 entries_mod.append((pred1, pred2, score))
-                #if pred1 not in assoc_mod:
-                #    assoc_mod[pred1] = defaultdict(lambda:-QUASI_INF)
-                #assoc_mod[pred1][pred2] = score
             elif pred1number == 0 and pred2number == 1:
                 # NOTE: reverse the order of the predicates so that the thing
                 # taking the argument comes first
                 entries_arg1.append((pred2, pred1, score))
-                #if pred1 not in assoc_arg1:
-                #    assoc_arg1[pred1] = defaultdict(lambda:-QUASI_INF)
-                #assoc_arg1[pred1][pred2] = score
+            elif pred1number == 0 and pred2number == 2:
+                # NOTE: reverse the order of the predicates so that the thing
+                # taking the argument comes first
+                entries_arg2.append((pred2, pred1, score))
             else:
                 raise NotImplementedError(
-                    "only modifiers and first arguments are currently supported. offending line: {}".format(l)
+                    "Only modifiers and first and second arguments are currently supported. Offending line: {}".format(l)
                 )
         predicates = bidict.bidict(enumerate(sorted(predicates)))
         predicates[len(predicates)] = "<UNK>"
 
-        # TODO re-add mod_mat
-#        # mod_mat[i, j] is the probability that predicate j cooccurs with predicate i as a modifier
-#        #mod_mat = torch.full((len(predicates), len(predicates)), fill_value=-np.inf)
-#        mod_mat = torch.full((len(predicates), len(predicates)), fill_value=-QUASI_INF)
-#
-#        for r, c, score in entries_mod:
-#            i = predicates.inverse[r]
-#            j = predicates.inverse[c]
-#            mod_mat[i, j] = score
-#
-#        # allow everything to associate with UNK
-#        mod_mat[:, -1] = 0
-#        mod_mat[-1, :] = 0
-#        mod_mat = mod_mat.log_softmax(dim=1)
-#
-#        printDebug("mod_mat:")
-#        printDebug(mod_mat)
-#
+        # mod_mat[i, j] is the probability that predicate j cooccurs with predicate i as a modifier
+        mod_mat = torch.full((len(predicates), len(predicates)), fill_value=-QUASI_INF)
         # arg1_mat[i, j] is the probability that predicate j is the first argument of predicate i
-        #arg1_mat = torch.full((len(predicates), len(predicates)), fill_value=-np.inf)
         arg1_mat = torch.full((len(predicates), len(predicates)), fill_value=-QUASI_INF)
+        arg2_mat = torch.full((len(predicates), len(predicates)), fill_value=-QUASI_INF)
+
+        for r, c, score in entries_mod:
+            i = predicates.inverse[r]
+            j = predicates.inverse[c]
+            mod_mat[i, j] = score
+
         for r, c, score in entries_arg1:
             i = predicates.inverse[r]
             j = predicates.inverse[c]
             arg1_mat[i, j] = score
 
+        for r, c, score in entries_arg2:
+            i = predicates.inverse[r]
+            j = predicates.inverse[c]
+            arg2_mat[i, j] = score
+
         # allow everything to associate with UNK
-        # TODO this should be changed so that nouns and adjectives can't take
+        mod_mat[:, -1] = 0
+        mod_mat[-1, :] = 0
+        mod_mat = mod_mat.log_softmax(dim=1)
+
+        # TODO possibly change so that nouns and adjectives can't take
         # arguments, even <UNK>. Add a bottom symbol as another predicate?
         arg1_mat[:, -1] = 0
         arg1_mat[-1, :] = 0
         arg1_mat = arg1_mat.log_softmax(dim=1)
 
+        arg2_mat[:, -1] = 0
+        arg2_mat[-1, :] = 0
+        arg2_mat = arg2_mat.log_softmax(dim=1)
+
+        printDebug("mod_mat:", mod_mat)
+        printDebug("arg1_mat:", arg1_mat)
+        printDebug("arg2_mat:", arg2_mat)
+
+        associations = torch.stack([mod_mat, arg1_mat, arg2_mat], dim=-1)
+        printDebug("associations:", associations)
+
         self.predicates = predicates
         self.num_preds = len(predicates)
-#        self.mod_mat = mod_mat
-        self.mod_mat = None
-        self.arg1_mat = arg1_mat
-#        num_all_preds = len(noun_predicates + adj_predicates + \
-#            vintrans_predicates + vtrans_predicates)
-#        self.noun_predicates = noun_predicates
-#        self.adj_predicates = adj_predicates
-#        self.vintrans_predicates = vintrans_predicates
-#        self.vtrans_predicates = vtrans_predicates
-#        self.num_all_preds = num_all_preds
-
-#        all_predicates = dict()
-#        noun_predicates = set()
-#        for l in open(config["noun_predicates"]):
-#            p = l.strip()
-#            noun_predicates.add(Predicate(p, "N"))
-#        all_predicates["noun"] = noun_predicates
-#        adj_predicates = set()
-#        for l in open(config["adj_predicates"]):
-#            p = l.strip()
-#            adj_predicates.add(Predicate(p, "ADJ"))
-#        all_predicates["adj"] = adj_predicates
-#        vintrans_predicates = set()
-#        for l in open(config["vintrans_predicates"]):
-#            p = l.strip()
-#            vintrans_predicates.add(Predicate(p, "VI"))
-#        all_predicates["vintrans"] = vintrans_predicates
-#        vtrans_predicates = set()
-#        for l in open(config["vtrans_predicates"]):
-#            p = l.strip()
-#            vtrans_predicates.add(Predicate(p, "VT"))
-#        all_predicates["vtrans"] = vtrans_predicates
-#
-#        noun_predicates = list(sorted(noun_predicates))
-#        adj_predicates = list(sorted(adj_predicates))
-#        vintrans_predicates = list(sorted(vintrans_predicates))
-#        vtrans_predicates = list(sorted(vtrans_predicates))
-#
-#        num_all_preds = len(noun_predicates + adj_predicates + \
-#            vintrans_predicates + vtrans_predicates)
-#        self.noun_predicates = noun_predicates
-#        self.adj_predicates = adj_predicates
-#        self.vintrans_predicates = vintrans_predicates
-#        self.vtrans_predicates = vtrans_predicates
-#        self.num_all_preds = num_all_preds
+        #self.mod_mat = mod_mat
+        #self.arg1_mat = arg1_mat
+        self.associations = associations
 
         
     def forward(self, x, eval=False, argmax=False, use_mean=False, indices=None, set_grammar=True, return_ll=True, **kwargs):
@@ -534,8 +531,8 @@ class BasicCGInducer(nn.Module):
                 full_p0,
                 full_G_larg,
                 full_G_rarg,
-                self.mod_mat,
-                self.arg1_mat,
+                self.associations,
+                self.operator_ixs,
                 self.emission,
                 pcfg_split=split_scores
             )
@@ -549,8 +546,6 @@ class BasicCGInducer(nn.Module):
             x = self.emit_prob_model(x, self.nt_emb, set_grammar=set_grammar)
 
         if argmax:
-            printDebug("inducer_x")
-            printDebug(x.flatten()[:20])
             if eval and self.device != self.eval_device:
                 print("Moving model to {}".format(self.eval_device))
                 self.parser.device = self.eval_device
