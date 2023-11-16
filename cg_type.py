@@ -1,8 +1,8 @@
-import json, bidict, sys
+import bidict
 from itertools import product as prod
 
 
-DEBUG = False
+DEBUG = True
 def printDebug(*args, **kwargs):
     if DEBUG:
         print("DEBUG: ", end="")
@@ -111,7 +111,6 @@ def generate_categories_by_depth(
 
 
 def category_from_string(string):
-    printDebug("category:", string)
     OPERATORS = ["-a", "-b"]
     if string[0] == "{":
         assert string[-1] == "}"
@@ -129,7 +128,6 @@ def category_from_string(string):
 
     # recursive case: split string at the operator
     else:
-        printDebug("not primitive")
         paren_count = 0
         split_ix = -1
         for ix, char in enumerate(string):
@@ -185,3 +183,26 @@ def read_categories_from_file(f):
     assert len(ix2cat) == len(all_cats)
     return all_cats, res_cats, arg_cats, ix2cat
 
+
+def arg_depth(category):
+    """Return the number of arguments a syntactic category needs to result
+    in a primitive. Modificands (e.g. combining with 0/0) are not treated as
+    arguments."""
+    if category.is_primitive():
+        return 0
+    else:
+        res, arg = category.res_arg
+        # TODO this deals with modifiers, so that e.g. 0/0 will still have
+        # depth 0. Once the inducer includes a separate operation for
+        # modification, this special case should probably be removed
+        if res == arg:
+            return arg_depth(res)
+        else:
+            return 1 + arg_depth(res)
+
+
+def get_category_argument_depths(ix2cat):
+    ix2argdepth = dict()
+    for i, cat in ix2cat.items():
+        ix2argdepth[i] = arg_depth(cat)
+    return ix2argdepth

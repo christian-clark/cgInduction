@@ -5,7 +5,7 @@ import torch.nn.functional as F
 import numpy as np
 
 
-DEBUG = True
+DEBUG = False
 def printDebug(*args, **kwargs):
     if DEBUG:
         print("DEBUG: ", end="")

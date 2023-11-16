@@ -5,7 +5,7 @@ from cky_parser_sgd import BatchCKYParser
 from char_coding_models import CharProbRNN, ResidualLayer, \
     WordProbFCFixVocabCompound
 from cg_type import CGNode, generate_categories_by_depth, \
-    read_categories_from_file
+    read_categories_from_file, get_category_argument_depths
 
 QUASI_INF = 10000000.
 
@@ -86,6 +86,9 @@ class BasicCGInducer(nn.Module):
             assert self.left_arg_penalty is None
             self.init_cats_from_list()
 
+        # cat_arg_depths[i] gives the number of arguments taken by category
+        # ix2cat[i]
+        self.cat_arg_depths = get_category_argument_depths(self.ix2cat)
 
         # operator_ixs[res, arg] tells what kind of operation
         # occurs when arg and res<op>arg combine to produce arg.
@@ -112,10 +115,28 @@ class BasicCGInducer(nn.Module):
                     assert res.res_arg[0].is_primitive()
                     operator_ixs[res_ix, arg_ix] = 2
 
-        printDebug("operator_ixs", operator_ixs)
         self.operator_ixs = operator_ixs
 
         self.init_predicates(config)
+
+        # TODO find the set of arg and res predcats; define num_arg_pc and
+        # num_res_pc
+        # then gather from masks to expand them from c x c to pc x pc
+
+        if self.larg_mask is not None:
+            self.larg_mask = self.larg_mask.repeat_interleave(
+                self.num_preds, dim=0
+            ).repeat_interleave(
+                self.num_preds, dim=1
+            )
+
+        if self.rarg_mask is not None:
+            self.rarg_mask = self.rarg_mask.repeat_interleave(
+                self.num_preds, dim=0
+            ).repeat_interleave(
+                self.num_preds, dim=1
+            )
+
 
         # expand so each syntactic category appears P times in a row
         # (P is number of predicates)
@@ -134,10 +155,8 @@ class BasicCGInducer(nn.Module):
 #            self.num_preds, dim=1
 #        )
 #
-        printDebug("lfunc_ixs:")
         printDebug(self.lfunc_ixs)
 
-        printDebug("rfunc_ixs:")
         printDebug(self.rfunc_ixs)
 
         # CG: "embeddings" for the categories are just one-hot vectors
@@ -368,6 +387,7 @@ class BasicCGInducer(nn.Module):
 
     def init_predicates(self, config):
         predicates = set()
+        pred_arg_counts = defaultdict(int)
         #assoc_mod = dict()
         #assoc_arg1 = dict()
 
@@ -380,19 +400,21 @@ class BasicCGInducer(nn.Module):
         # header
         f_assoc.readline()
         for l in f_assoc:
-            pred1, pred1number, pred2, pred2number, score = l.strip().split()
-            pred1number = int(pred1number)
-            pred2number = int(pred2number)
+            pred1, pred1role, pred2, pred2role, score = l.strip().split()
+            pred1role = int(pred1role)
+            pred2role = int(pred2role)
             score = float(score)
             predicates.add(pred1)
             predicates.add(pred2)
-            if pred1number == 0 and pred2number == 0:
+            pred_arg_counts[pred1] = max(pred1role, pred_arg_counts[pred1])
+            pred_arg_counts[pred2] = max(pred2role, pred_arg_counts[pred2])
+            if pred1role == 0 and pred2role == 0:
                 entries_mod.append((pred1, pred2, score))
-            elif pred1number == 0 and pred2number == 1:
+            elif pred1role == 0 and pred2role == 1:
                 # NOTE: reverse the order of the predicates so that the thing
                 # taking the argument comes first
                 entries_arg1.append((pred2, pred1, score))
-            elif pred1number == 0 and pred2number == 2:
+            elif pred1role == 0 and pred2role == 2:
                 # NOTE: reverse the order of the predicates so that the thing
                 # taking the argument comes first
                 entries_arg2.append((pred2, pred1, score))
@@ -401,6 +423,7 @@ class BasicCGInducer(nn.Module):
                     "Only modifiers and first and second arguments are currently supported. Offending line: {}".format(l)
                 )
         predicates = bidict.bidict(enumerate(sorted(predicates)))
+        # TODO remove this (no more <UNK>)
         predicates[len(predicates)] = "<UNK>"
 
         # mod_mat[i, j] is the probability that predicate j cooccurs with predicate i as a modifier
@@ -438,15 +461,10 @@ class BasicCGInducer(nn.Module):
         arg2_mat[:, -1] = 0
         arg2_mat[-1, :] = 0
         arg2_mat = arg2_mat.log_softmax(dim=1)
-
-        printDebug("mod_mat:", mod_mat)
-        printDebug("arg1_mat:", arg1_mat)
-        printDebug("arg2_mat:", arg2_mat)
-
         associations = torch.stack([mod_mat, arg1_mat, arg2_mat], dim=-1)
-        printDebug("associations:", associations)
 
         self.predicates = predicates
+        self.pred_arg_counts = pred_arg_counts
         self.num_preds = len(predicates)
         #self.mod_mat = mod_mat
         #self.arg1_mat = arg1_mat
