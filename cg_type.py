@@ -2,7 +2,7 @@ import bidict
 from itertools import product as prod
 
 
-DEBUG = True
+DEBUG = False
 def printDebug(*args, **kwargs):
     if DEBUG:
         print("DEBUG: ", end="")
@@ -176,11 +176,15 @@ def read_categories_from_file(f):
     # categories that can be arguments or results come first in ix2cat
     ix2cat = bidict.bidict()
     res_arg_cats = res_cats.union(arg_cats)
-    for cat in res_arg_cats:
+    # NOTE I think this isn't necessary anymore (was used when res and arg cats
+    # were placed at the beginning of ix2cat)
+#    for cat in res_arg_cats:
+#        ix2cat[len(ix2cat)] = cat
+#    for cat in all_cats - res_arg_cats:
+#        ix2cat[len(ix2cat)] = cat
+    for cat in sorted(all_cats):
         ix2cat[len(ix2cat)] = cat
-    for cat in all_cats - res_arg_cats:
-        ix2cat[len(ix2cat)] = cat
-    assert len(ix2cat) == len(all_cats)
+#    assert len(ix2cat) == len(all_cats)
     return all_cats, res_cats, arg_cats, ix2cat
 
 

@@ -105,8 +105,6 @@ class WordProbFCFixVocabCompound(nn.Module):
         if set_grammar:
             dist = nn.functional.log_softmax(self.fc(predcat_embs), 1).t() # vocab, predcats
             self.dist = dist
-            printDebug("word model dist:")
-            printDebug(dist)
         else:
             pass
         word_indices = words[:, 1:-1]

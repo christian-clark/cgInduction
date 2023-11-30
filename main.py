@@ -174,6 +174,8 @@ def setup(eval_only=False):
     for word, _ in vocab:
         if word not in word_lexicon:
             word_lexicon[word] = len(word_lexicon)
+    printDebug("word_lexicon:")
+    printDebug(word_lexicon)
 
     logging.info('Vocabulary size: {0}'.format(len(word_lexicon)) + '; Max length: {}'.format(max([len(x) for x in word_lexicon])))
 
@@ -226,22 +228,22 @@ def setup(eval_only=False):
 
 
     logging.info(
-        "Total number of categories: {}".format(parser.num_all_cats)
+        "Total number of categories: {}".format(len(parser.all_cats))
     )
     logging.info(
-        "Number of argument categories: {}".format(parser.num_arg_cats)
+        "Number of argument categories: {}".format(len(parser.arg_cats))
     )
     logging.info(
-        "Number of result categories: {}".format(parser.num_res_cats)
+        "Number of result categories: {}".format(len(parser.res_cats))
     )
     logging.info(
-        "Examples of categories: {}".format(list(parser.ix2cat.items())[:100])
+        "Examples of categories: {}".format(list(parser.ix2cat.values())[:100])
     )
     logging.info(
-        "Total number of predicates: {}".format(parser.num_preds)
+        "Total number of predicates: {}".format(len(parser.ix2pred))
     )
     logging.info(
-        "Predicate examples: {}".format(list(parser.predicates.items())[:100])
+        "Predicate examples: {}".format(list(parser.ix2pred.values())[:100])
     )
 
     model = TopModel(parser, writer)
