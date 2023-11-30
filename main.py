@@ -296,21 +296,6 @@ def train():
             eval_access(valid_pred_trees, valid_trees, model.writer, -1)
         model.to(config["device"])
         
-#    # evaluate the untrained model (written in log as epoch -1)
-#    if config.getboolean("eval_parsing"):
-#        # evaluate on CPU
-#        model.to(config["eval_device"])
-#        total_eval_likelihoods, trees = model_use.parse_dataset(model, valid, -1)
-#
-#        valid_pred_trees = postprocess.print_trees(
-#            trees, valid_data, -1, config["model_path"]
-#        )
-#        if config.getboolean("labeled_eval"):
-#            eval_access(valid_pred_trees, valid_trees, model.writer, -1)
-#
-#        # back to GPU for training
-#        model.to(config["device"])
-
     for epoch in range(config.getint("start_epoch"), config.getint("max_epoch")):
         optimizer = model_use.train_model(
             epoch, model, optimizer, train, config.getint("batch_size"),
@@ -332,22 +317,6 @@ def train():
                 if valid_trees is not None:
                     eval_access(valid_pred_trees, valid_trees, model.writer, -1)
                 model.to(config["device"])
-
-#            if config.getboolean("eval_parsing"):
-#                # evaluate on CPU
-#                model.to(config["eval_device"])
-#
-#                total_eval_likelihoods, trees = model_use.parse_dataset(model, valid, epoch)
-#
-#                valid_pred_trees = postprocess.print_trees(
-#                    trees, valid_data, epoch, config["model_path"]
-#                )
-#
-#                if config.getboolean("labeled_eval"):
-#                    eval_access(valid_pred_trees, valid_trees, model.writer, -1)
-#
-#                # back to GPU for training
-#                model.to(config["device"])
 
             else:
                 total_eval_likelihoods = model_use.likelihood_dataset(model, train, epoch) * (-1)
