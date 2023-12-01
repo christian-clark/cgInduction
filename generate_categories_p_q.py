@@ -22,15 +22,8 @@ DEFAULT_CONFIG = {
     "DEFAULT": {
         "p": 0.5,
         "q": 0.5,
-        "numCats": 100,
-        "minLogProb": -100,
-        #"maxCost": 10,
-        #"noBranchCost": 1,
-        #"categoryCost": {
-        #    "mode": "linear",
-        #    "slope": 1,
-        #    "intercept": 0
-        #},
+        "maxCats": 100,
+        "minLogProb": -10,
         "opACost": 0,
         "opBCost": 0
     }
@@ -206,19 +199,8 @@ class CategoryTree:
         return hash(str(self))
 
 
-def cat_cost(cat_id, config):
-    config = config["categoryCost"].replace("'", '"')
-    config = json.loads(config)
-    if config["mode"] == "linear":
-        m = config["slope"]
-        b = config["intercept"]
-        return m*cat_id + b
-    else:
-        return cat_id
-
-
 def generate_categories(config):
-    num_cats = config.getint("numCats")
+    max_cats = config.getint("maxCats")
     # use negative log probs: smaller score means more likely
     max_score = -1 * config.getfloat("minLogProb")
     # generate a primitive
@@ -238,11 +220,14 @@ def generate_categories(config):
     # score for category 0 (p for choosing a primitive, q for not
     # moving to next primitive)
     start_score = p + q
+    curr_score = start_score
+    curr_score_cats = list()
     queue.put((start_score, put_index, start_t))
     put_index += 1
     split_ta = CategoryTree(op="-a", res=start_t, arg=start_t)
     split_tb = CategoryTree(op="-b", res=start_t, arg=start_t)
-    while len(categories) < num_cats: #and not queue.empty():
+    #while len(categories) < num_cats: #and not queue.empty():
+    while len(categories) + len(curr_score_cats) <= max_cats:
         score, _, t = queue.get_nowait()
         if score > max_score:
             break
@@ -281,8 +266,18 @@ def generate_categories(config):
             queue.put((t_score_split, put_index, t_copy_split_b))
             put_index += 1
 
-        categories.append(t)
-        scores.append(score)
+        if score > curr_score:
+            categories.extend(curr_score_cats)
+            for _ in curr_score_cats:
+                scores.append(curr_score)
+            curr_score_cats = [t]
+            curr_score = score
+        else:
+            curr_score_cats.append(t)
+        #categories.append(t)
+        #scores.append(score)
+    # curr_score_cats is not returned because we should either return all
+    # categories with score X or cap the score lower than X
     return categories, scores
 
 
@@ -305,11 +300,11 @@ def main():
         k, v = kv.split("=")
         config[k] = v
     
-    categories, costs = generate_categories(config)
-    print("Category\tCost")
+    categories, scores = generate_categories(config)
+    print("Category\tScore")
     for i, cat in enumerate(categories):
-        cost = costs[i]
-        print("{}\t{}".format(cat, round(cost, 2)))
+        score = scores[i]
+        print("{}\t{}".format(cat, round(score, 2)))
 
 
 if __name__ == "__main__":
