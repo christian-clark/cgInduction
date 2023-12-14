@@ -1,3 +1,4 @@
 *__pycache__/
 eval/orig.evalb_unlabeled.py
 eval/bd.evalb_unlabeled.py
+*.code-workspace

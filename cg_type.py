@@ -175,9 +175,9 @@ def read_categories_from_file(f):
         arg_cats.add(arg)
     # categories that can be arguments or results come first in ix2cat
     ix2cat = bidict.bidict()
-    res_arg_cats = res_cats.union(arg_cats)
     # NOTE I think this isn't necessary anymore (was used when res and arg cats
     # were placed at the beginning of ix2cat)
+#    res_arg_cats = res_cats.union(arg_cats)
 #    for cat in res_arg_cats:
 #        ix2cat[len(ix2cat)] = cat
 #    for cat in all_cats - res_arg_cats:

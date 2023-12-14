@@ -190,11 +190,15 @@ class BatchCKYParser:
                 imax, batch_size, 1, 1
             )
 
+
             # dim: imax x batch_size x Qres x Qarg
             associations = self.associations.repeat(
                 imax, batch_size, 1, 1
             ).to(self.device)
 
+            # TODO add in prior over predicates here, along with associations.
+            # the two should be weighted with a learnable parameter
+            # (torch.nn.Parameter?)
             # dim: imax x batch_size x Qres x Qarg
             scores_larg += associations
             scores_rarg += associations
