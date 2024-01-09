@@ -13,7 +13,6 @@ def printDebug(*args, **kwargs):
         print(*args, **kwargs)
 
 
-SMALL_NEGATIVE_NUMBER = -1e8
 def logsumexp_multiply(a, b):
     max_a = a.max()
     max_b = b.max()
@@ -28,12 +27,9 @@ class BatchCKYParser:
         argpc_2_pc, lfunc_ixs, rfunc_ixs, larg_mask, rarg_mask, qall, qres,
         qarg, device="cpu"
     ):
+        # TODO figure out/document what D and K do
         self.D = -1
-        # TODO is this correct?
         self.K = qres
-        self.lexis = None # Preterminal expansion part of the grammar (this will be dense)
-        self.G = None     # Nonterminal expansion part of the grammar (usually be a sparse matrix representation)
-        self.p0 = None
         self.ix2cat = ix2cat
         self.ix2pred = ix2pred
         self.ix2predcat = ix2predcat
@@ -51,25 +47,21 @@ class BatchCKYParser:
         # total number of argument predcats
         self.Qarg = qarg
         self.this_sent_len = -1
-        self.counter = 0
-        self.vocab_prob_list = []
-        self.finished_vocab = set()
         if torch.cuda.is_available() and device == 'cuda':
             self.device = 'cuda'
         else:
             self.device = 'cpu'
 
-    # TODO rename pcfg_split
+
     def set_models(
             self, p0, expansion_larg, expansion_rarg, associations, 
-            emission, pcfg_split=None
+            split_scores
         ):
         self.log_G_larg = expansion_larg
         self.log_G_rarg = expansion_rarg
         self.associations = associations
         self.log_p0 = p0
-        self.log_lexis = emission
-        self.pcfg_split = pcfg_split
+        self.split_scores = split_scores
 
 
     def marginal(self, sents, viterbi_flag=False, only_viterbi=False, sent_indices=None):
@@ -106,7 +98,6 @@ class BatchCKYParser:
             vtree_list, vproduction_counter_dict_list, vlr_branches_list = [None]*len(sents), [None]*len(sents), \
                                                                  [None]*len(sents)
 
-        self.counter+=1
         return logprob_list, vtree_list, vproduction_counter_dict_list, vlr_branches_list
 
 
@@ -127,7 +118,7 @@ class BatchCKYParser:
         self.right_chart = torch.zeros(
             (sent_len, sent_len, batch_size, self.Qall)
         ).float().to(self.device)
-        self.get_lexis_prob(sents, self.left_chart)
+        self.set_lexical_prob(sents, self.left_chart)
         self.right_chart[0] = self.left_chart[0]
 
         for ij_diff in range(1, sent_len):
@@ -261,9 +252,6 @@ class BatchCKYParser:
 
 
     def marginal_likelihood_logspace(self, sents):
-        batch_size = len(sents)
-        nodes_list = []
-
         sent_len = self.this_sent_len
         topnode_pdf = self.left_chart[sent_len-1, 0]
 
@@ -288,7 +276,7 @@ class BatchCKYParser:
             (sent_len, sent_len, batch_size, self.Qall)
         ).float().to(self.device)
         backtrack_chart = {}
-        self.get_lexis_prob(sent, self.left_chart)
+        self.set_lexical_prob(sent, self.left_chart)
         # for debugging
         printDebug("========================")
         printDebug("preterminal probabilities")
@@ -609,26 +597,6 @@ class BatchCKYParser:
         return nodes_list
 
 
-    def get_lexis_prob(self, sent_embs, left_chart):
-        sent_embs = sent_embs.transpose(1, 0) # sentlen, batch, emb
-        if isinstance(self.log_lexis, torch.distributions.Distribution):
-            sent_embs = sent_embs.unsqueeze(-2) # sentlen, batch, 1, emb
-            lexis_probs = self.log_lexis.log_prob(sent_embs) # sentlen, batch, terms
-
-        elif self.log_lexis is None:
-            lexis_probs = sent_embs  # sentlen, batch, terms
-
-        else:
-            lexis_probs = self.log_lexis.log_prob(sent_embs) # sentlen, batch, terms
-        # print('lexical', lexis_probs)
-        if self.pcfg_split is not None:
-            lexis_probs = lexis_probs + self.pcfg_split[:, 1] # sentlen, batch, p
-            full_lexis_probs = lexis_probs
-        else:
-            full_lexis_probs = torch.full((lexis_probs.shape[0], lexis_probs.shape[1], self.K), SMALL_NEGATIVE_NUMBER,
-                                          device=lexis_probs.device)
-            full_lexis_probs = torch.cat([full_lexis_probs, lexis_probs], dim=2)
-            print(full_lexis_probs[0,0])
-        left_chart[0] = full_lexis_probs
-        return
-
+    def set_lexical_prob(self, sent_embs, left_chart):
+        lexical_probs = sent_embs.transpose(1, 0) # sentlen, batch, emb
+        left_chart[0] = lexical_probs + self.split_scores[:, 1] # sentlen, batch, p

@@ -289,7 +289,6 @@ class BasicCGInducer(nn.Module):
                     res_preds_per_cat[c_ix].add(p)
         printDebug("ix2predcat_res:", ix2predcat_res)
 
-
         ix2predcat_arg = bidict()
         arg_preds_per_cat = defaultdict(set)
         for c in self.arg_cats:
@@ -303,7 +302,7 @@ class BasicCGInducer(nn.Module):
                     arg_preds_per_cat[c_ix].add(p)
         printDebug("ix2predcat_arg:", ix2predcat_arg)
 
-        # maps index of a result predcat to its index in the full set of predcats
+        # maps index of an arg predcat to its index in the full set of predcats
         # used during viterbi parsing
         # could also define this for res predcats but it doesn't seem necessary
         argpc_2_pc = [ix2predcat.inv[ix2predcat_arg[i]] for i in range(len(ix2predcat_arg))]
@@ -480,7 +479,6 @@ class BasicCGInducer(nn.Module):
     def forward(self, x, eval=False, argmax=False, use_mean=False, indices=None, set_grammar=True, return_ll=True, **kwargs):
         # x : batch x n
         if set_grammar:
-            self.emission = None
             # dim: Qall
 #            root_scores = F.log_softmax(
 #                self.root_mask+self.root_mlp(self.root_emb).squeeze(), dim=0
@@ -534,8 +532,7 @@ class BasicCGInducer(nn.Module):
                 full_G_larg,
                 full_G_rarg,
                 self.associations,
-                self.emission,
-                pcfg_split=split_scores
+                split_scores
             )
 
 
