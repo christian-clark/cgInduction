@@ -1,4 +1,4 @@
-import torch, random, numpy as np, torch.nn.functional as F, math
+import torch, random, numpy as np, torch.nn.functional as F
 from bidict import bidict
 from collections import defaultdict
 from torch import nn
@@ -103,7 +103,6 @@ class BasicCGInducer(nn.Module):
         self.init_predicates(config)
         self.init_predcats()
         self.init_association_matrix()
-        self.init_predicate_prior(config)
         self.init_masks()
         self.init_functor_lookup_tables()
 
@@ -137,9 +136,7 @@ class BasicCGInducer(nn.Module):
         )
 
         self.root_emb = nn.Parameter(torch.eye(1)).to(self.device)
-
-        self.pred_dummy_emb = nn.Parameter(torch.eye(len(self.ix2pred)))
-        self.root_cat_given_pred = nn.Linear(len(self.ix2pred), len(self.all_cats))
+        self.root_mlp = nn.Linear(1, self.qall).to(self.device)
 
         # decides terminal or nonterminal
         self.split_mlp = nn.Sequential(
@@ -257,9 +254,6 @@ class BasicCGInducer(nn.Module):
 
 
     def init_predcats(self):
-        """Defines the set of (predicate, category) pairs used by the model.
-        A category of depth D can be paired with any predicate that has at
-        least D roles."""
         max_pred_role_count = max(self.preds_by_role_count)
         # ix2predcat assigns an index to each valid (predicate, category)
         # pair. E.g., if the index of (DOG, 1/0) is 5, then
@@ -335,6 +329,8 @@ class BasicCGInducer(nn.Module):
 
 
     def init_association_matrix(self):
+        # TODO arg_depth_to_cats needs to be corrected to be different for
+        # res and arg (depth-k res cats are not relevant for arg)
         #### define association matrix
         # TODO H_res and H_arg should prolly use indices rather than
         # raw predicates, for consistency with how categories are handled
@@ -390,44 +386,6 @@ class BasicCGInducer(nn.Module):
         printDebug("initial associations:", self.associations)
 
 
-    def init_predicate_prior(self, config):
-        # format: predicate template scores
-        # scores are in raw logits
-        f_prior = open(config["predicate_prior"])
-        all_preds = set()
-        preds_by_template = defaultdict(dict)
-        for l in f_prior:
-            pred, template, score = l.strip().split()
-            logprob = float(score)
-            all_preds.add(pred)
-            preds_by_template[template][pred] = logprob
-        assert all_preds == set(self.ix2pred.values()), "predicates: {}".format(set(self.ix2pred.values()))
-        predicate_prior = torch.full((len(all_preds),), fill_value=-np.inf)
-        for template in preds_by_template:
-            items = list(preds_by_template[template].items())
-            preds = [i[0] for i in items]
-            scores = torch.tensor([i[1] for i in items])
-            logprobs = torch.log_softmax(scores, dim=0)
-            for pred, logprob in zip(preds, logprobs):
-                ix = self.ix2pred.inverse[pred]
-                predicate_prior[ix] = logprob
-                printDebug("pred {} logprob {}".format(pred, logprob))
-        # scale so predicate_prior forms a probability distribution
-        predicate_prior -= math.log(len(preds_by_template.keys()))
-        printDebug("predicate_prior", predicate_prior)
-        self.pred_prior = predicate_prior.to(self.device)
-        #lse = torch.logsumexp(predicate_prior, dim=0)
-        #printDebug("lse:", lse)
-#        # dim: Qall
-#        expanded_predicate_prior = torch.full(
-#            (self.qall,), fill_value=-np.inf
-#        )
-#        for ix, (pred_ix, _) in self.ix2predcat.items():
-#            expanded_predicate_prior[ix] = predicate_prior[pred_ix]
-#        printDebug("expanded_predicate_prior", expanded_predicate_prior)
-#        self.pred_prior = expanded_predicate_prior.to(self.device)
-
-
     def init_masks(self):
         # larg_mask and rarg_mask block impossible argument-result pairs
         # with the argument category on the left and right respectively
@@ -467,29 +425,16 @@ class BasicCGInducer(nn.Module):
         self.rarg_mask = rarg_mask.to(self.device)
 
 
-#        # dim: Qall
-#        root_mask = torch.full(
-#            (self.qall,), fill_value=-np.inf
-#        ).to(self.device)
-#        for ix in range(self.qall):
-#            pred_ix, cat_ix = self.ix2predcat[ix]
-#            cat = self.ix2cat[cat_ix]
-#            if (pred_ix, cat_ix) in self.ix2predcat_res.values() \
-#                and cat.is_primitive():
-#                root_mask[ix] = 0
-
-        # dim: num_preds x num_cats
         root_mask = torch.full(
-            (len(self.ix2pred), len(self.ix2cat)), fill_value=-np.inf
-        )
-
+            (self.qall,), fill_value=-np.inf
+        ).to(self.device)
         for ix in range(self.qall):
             pred_ix, cat_ix = self.ix2predcat[ix]
             cat = self.ix2cat[cat_ix]
             if (pred_ix, cat_ix) in self.ix2predcat_res.values() \
                 and cat.is_primitive():
-                root_mask[pred_ix, cat_ix] = 0
-        printDebug("root mask", root_mask)
+                root_mask[ix] = 0
+
         self.root_mask = root_mask.to(self.device)
 
 
@@ -536,39 +481,15 @@ class BasicCGInducer(nn.Module):
         # x : batch x n
         if set_grammar:
             self.emission = None
-#            # dim: Qall
+            # dim: Qall
 #            root_scores = F.log_softmax(
 #                self.root_mask+self.root_mlp(self.root_emb).squeeze(), dim=0
 #            )
-
-            # dim: num_preds x num_cats
-            raw_scores = self.pred_prior[:, None] \
-                    + self.root_cat_given_pred(self.pred_dummy_emb) \
-                    + self.root_mask
-            printDebug("raw_scores", raw_scores)
-
-            # take softmax across all predcats
-            root_scores_flat = F.log_softmax(raw_scores.flatten(), dim=0)
-            printDebug("root_scores_flat", root_scores_flat)
-
-            # reshape into num_preds x num_cats
-            root_scores = root_scores_flat.reshape((len(self.ix2pred), len(self.ix2cat)))
-            printDebug("root_scores", root_scores)
-
-            # consolidate into dim: Qall
-            consolidated_root_scores = torch.full(
-                (self.qall,), fill_value=-np.inf
-            )
-            for ix, (pred_ix, cat_ix) in self.ix2predcat.items():
-                score = root_scores[pred_ix, cat_ix]
-                consolidated_root_scores[ix] = score
-
-            # the commented-out line below assigns equal probability to all
-            # possible root nodes
-            #root_scores = F.log_softmax(self.root_mask, dim=0)
-
-            # dim: Qall
-            full_p0 = consolidated_root_scores.to(self.device)
+            # all possible root nodes are assigned equal probability.
+            # the commented-out alternative assigns root nodes randomly initialized
+            # probabilities
+            root_scores = F.log_softmax(self.root_mask, dim=0)
+            full_p0 = root_scores
 
             # dim: Qres x 2Qarg
             mlp_out = self.rule_mlp(self.fake_emb)
