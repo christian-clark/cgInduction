@@ -1,11 +1,10 @@
-import os, sys, gzip, shutil, argparse, time, random, logging, json, bidict
+import os, sys, gzip, shutil, time, random, logging, bidict, torch
+import torch.nn.functional as F
 import numpy as np
-import torch, torch.nn as nn, torch.nn.functional as F
 import torch.optim as optim
 from configparser import ConfigParser
-from collections import Counter
 from torch.utils.tensorboard import SummaryWriter
-from torch.autograd import Variable
+
 import preprocess, postprocess, model_use
 from top_models import TopModel
 from eval.eval_access import eval_access
@@ -36,7 +35,7 @@ DEFAULT_CONFIG = {
 }
 
 
-DEBUG = False
+DEBUG = True
 def printDebug(*args, **kwargs):
     if DEBUG:
         print("DEBUG: ", end="")
@@ -44,7 +43,6 @@ def printDebug(*args, **kwargs):
 
 
 def random_seed(seed_value, use_cuda):
-    printDebug("seeding to value {}".format(seed_value))
     np.random.seed(seed_value) # cpu vars
     torch.manual_seed(seed_value) # cpu  vars
     random.seed(seed_value) # Python
@@ -74,7 +72,6 @@ def setup(eval_only=False):
     if config.getint("seed") < 0: # random seed if seed is set to negative values
         seed = int(int(time.time()) * random.random())
         config["seed"] = str(seed)
-    printDebug("seed is value {}".format(config.getint("seed")))
     random_seed(config.getint("seed"), use_cuda=config["device"]=="cuda")
 
     for handler in logging.root.handlers[:]:
@@ -174,8 +171,6 @@ def setup(eval_only=False):
     for word, _ in vocab:
         if word not in word_lexicon:
             word_lexicon[word] = len(word_lexicon)
-    printDebug("word_lexicon:")
-    printDebug(word_lexicon)
 
     logging.info('Vocabulary size: {0}'.format(len(word_lexicon)) + '; Max length: {}'.format(max([len(x) for x in word_lexicon])))
 
@@ -218,6 +213,8 @@ def setup(eval_only=False):
     else:
         valid = None
 
+    logging.info('word lexicon:')
+    logging.info(word_lexicon)
     logging.info('vocab size: {0}'.format(len(word_lexicon)))
 
     parser = BasicCGInducer(
@@ -237,7 +234,7 @@ def setup(eval_only=False):
         "Number of result categories: {}".format(len(parser.res_cats))
     )
     logging.info(
-        "Examples of categories: {}".format(list(parser.ix2cat.values())[:100])
+        "Examples of categories: {}".format(list(parser.ix2cat_all.values())[:100])
     )
     logging.info(
         "Total number of predicates: {}".format(len(parser.ix2pred))
@@ -332,6 +329,44 @@ def train():
                 patient += 1
                 if patient >= config.getint("eval_patient"):
                     break
+
+            torch.set_printoptions(sci_mode=False, linewidth=300)
+            printDebug("p0 probs")
+            printDebug(torch.exp(model.inducer.parser.log_p0))
+
+            printDebug("split probs")
+            printDebug(torch.exp(model.inducer.parser.split_scores))
+
+            operation_scores = model.inducer.operation_mlp(model.inducer.res_predcat_onehot)
+            operation_probs = F.log_softmax(operation_scores, dim=1)
+            printDebug("operation probs")
+            printDebug(torch.exp(operation_probs))
+
+            printDebug("association probs")
+            printDebug(torch.exp(model.inducer.associations))
+
+            mlp_out = model.inducer.rule_mlp(model.inducer.res_cat_onehot)
+            rule_scores_Aa = mlp_out[:, :model.inducer.carg]
+            rule_probs_Aa = F.log_softmax(rule_scores_Aa, dim=1)
+            rule_scores_Ab = mlp_out[:, model.inducer.carg:]
+            rule_probs_Ab = F.log_softmax(rule_scores_Ab, dim=1)
+            printDebug("rule_mlp Aa probs")
+            printDebug(torch.exp(rule_probs_Aa))
+            printDebug("rule_mlp Ab probs")
+            printDebug(torch.exp(rule_probs_Ab))
+
+            printDebug("combined G Aa probs")
+            printDebug(torch.exp(model.inducer.parser.log_G_Aa))
+            printDebug("combined G Ab probs")
+            printDebug(torch.exp(model.inducer.parser.log_G_Ab))
+
+            word_dist = torch.exp(model.inducer.emit_prob_model.dist)
+            printDebug("word_dist shape")
+            printDebug(word_dist.shape)
+            printDebug("word_dist")
+            printDebug(word_dist)
+
+
 
     model.writer.close()
     logfile_fh.close()

@@ -91,8 +91,8 @@ def train_model(
             model.writer.add_scalar('train_accumulative/average_total_loss', total_loss / total_tag, global_step)
 
     model.writer.add_scalar('train_epochwise/average_total_loss', total_loss / total_tag, epoch)
-
     return optimizer
+
 
 def parse_dataset(model, dataset, epoch, section='dev'):
     model.eval()

@@ -6,7 +6,7 @@ import numpy as np
 
 QUASI_INF = 10000000.
 
-DEBUG = False
+DEBUG = True
 def printDebug(*args, **kwargs):
     if DEBUG:
         print("DEBUG: ", end="")
@@ -54,12 +54,10 @@ class BatchCKYParser:
 
 
     def set_models(
-            self, p0, expansion_larg, expansion_rarg, associations, 
-            split_scores
+            self, p0, expansion_Aa, expansion_Ab, split_scores
         ):
-        self.log_G_larg = expansion_larg
-        self.log_G_rarg = expansion_rarg
-        self.associations = associations
+        self.log_G_Aa = expansion_Aa
+        self.log_G_Ab = expansion_Ab
         self.log_p0 = p0
         self.split_scores = split_scores
 
@@ -171,24 +169,15 @@ class BatchCKYParser:
             # probability that parent category i branches into left argument j
             # and right functor i-aj
             # dim: imax x batch_size x Qres x Qarg
-            scores_larg = self.log_G_larg.to(self.device).repeat(
+            scores_larg = self.log_G_Aa.to(self.device).repeat(
                 imax, batch_size, 1, 1
             )
             # probability that parent category i branches into left functor i-bj
             # and right argument j
             # dim:  imax x batch_size x Qres x Qarg
-            scores_rarg = self.log_G_rarg.to(self.device).repeat(
+            scores_rarg = self.log_G_Ab.to(self.device).repeat(
                 imax, batch_size, 1, 1
             )
-
-            # dim: imax x batch_size x Qres x Qarg
-            associations = self.associations.repeat(
-                imax, batch_size, 1, 1
-            ).to(self.device)
-
-            # dim: imax x batch_size x Qres x Qarg
-            scores_larg += associations
-            scores_rarg += associations
 
             # dim: imax x batch_size x Qres x Qarg
             rfunc_ixs = self.rfunc_ixs.repeat(imax, batch_size, 1, 1)
@@ -264,8 +253,6 @@ class BatchCKYParser:
 
 
     def compute_viterbi_inside(self, sent):
-        printDebug("computing viterbi inside")
-
         self.this_sent_len = sent.shape[1]
         batch_size = 1
         sent_len = self.this_sent_len
@@ -277,22 +264,9 @@ class BatchCKYParser:
         ).float().to(self.device)
         backtrack_chart = {}
         self.set_lexical_prob(sent, self.left_chart)
-        # for debugging
-        printDebug("========================")
-        printDebug("preterminal probabilities")
-        # dim: sent_len x Qall
-        preterm = self.left_chart[0, :, 0, :]
-        printDebug("preterm shape", preterm.shape)
-        for wdebug in range(preterm.shape[0]):
-            printDebug(preterm[wdebug])
-            best_predcat = torch.max(preterm[wdebug])
-            printDebug("\tword:{} bestpc:{}".format(wdebug, best_predcat))
-        # /for debugging
         self.right_chart[0] = self.left_chart[0]
 
         for ij_diff in range(1, sent_len):
-            printDebug("========================")
-            printDebug("ij_diff:", ij_diff)
             imin = 0
             imax = sent_len - ij_diff
             jmin = ij_diff
@@ -331,23 +305,15 @@ class BatchCKYParser:
             # probability that parent category i branches into left argument j
             # and right functor i-aj
             # dim: height x imax x batch_size x Qres x Qarg
-            scores_larg = self.log_G_larg.to(self.device).repeat(
+            scores_larg = self.log_G_Aa.to(self.device).repeat(
                 height, imax, batch_size, 1, 1
             )
             # probability that parent category i branches into left functor i-bj
             # and right argument j
             # dim: height x imax x batch_size x Qres x Qarg
-            scores_rarg = self.log_G_rarg.to(self.device).repeat(
+            scores_rarg = self.log_G_Ab.to(self.device).repeat(
                 height, imax, batch_size, 1, 1
             )
-
-            # dim: height x imax x batch_size x Qres x Qarg
-            associations = self.associations.repeat(
-               height, imax, batch_size, 1, 1
-            ).to(self.device)
-
-            scores_larg += associations
-            scores_rarg += associations
 
             # dim: height x imax x batch_size x Qres x Qarg
             rfunc_ixs = self.rfunc_ixs.repeat(height, imax, batch_size, 1, 1)
@@ -416,9 +382,7 @@ class BatchCKYParser:
             l_cs = torch.gather(rfunc_ixs, index=l_bs_reshape, dim=3).squeeze(dim=3)
 
             # dim: imax x batch_size x Qarg
-            pc_ix = self.argpc_2_pc.repeat(
-                imax, batch_size, 1
-            )
+            pc_ix = self.argpc_2_pc.repeat(imax, batch_size, 1)
 
             # dim: imax x batch_size x Qres
             # now each entry is an index for ix2predcat instead of
@@ -484,28 +448,6 @@ class BatchCKYParser:
             best_kbc = torch.gather(lr_kbc, index=combined_argmax, dim=0).squeeze(dim=0)
             # dim: imax x batch_size x Qres x 3
             best_kbc = best_kbc.permute(1, 2, 3, 0)
-
-            # for debugging
-            if DEBUG:
-                for idebug in range(best_kbc.shape[0]):
-                    jdebug = idebug + ij_diff
-                    printDebug("\ti={} j={}".format(idebug, jdebug))
-                    for res_ix in range(best_kbc.shape[2]):
-                        respred_ix, rescat_ix = self.ix2predcat_res[res_ix]
-                        respred = self.ix2pred[respred_ix]
-                        rescat = self.ix2cat[rescat_ix]
-                        kbcdebug = best_kbc[idebug, 0, res_ix]
-                        kdebug = kbcdebug[0].item()
-                        bdebug = kbcdebug[1].item()
-                        cdebug = kbcdebug[2].item()
-                        bpred_ix, bcat_ix = self.ix2predcat[bdebug]
-                        bpred = self.ix2pred[bpred_ix]
-                        bcat = self.ix2cat[bcat_ix]
-                        cpred_ix, ccat_ix = self.ix2predcat[cdebug]
-                        cpred = self.ix2pred[cpred_ix]
-                        ccat = self.ix2cat[ccat_ix]
-                        printDebug("\t\tres={}:{} bestk={} bestb={}:{} bestc={}:{}".format(rescat, respred, kdebug, bcat, bpred, ccat, cpred))
-            # /for debugging
             backtrack_chart[ij_diff] = best_kbc
         self.right_chart = None
         return backtrack_chart
@@ -526,6 +468,8 @@ class BatchCKYParser:
         a_ll, top_a = torch.max(p_topnode, dim=-1)
         # top_A = top_A.squeeze()
         # A_ll = A_ll.squeeze()
+        printDebug("viterbi top_a likelihood:", a_ll)
+        printDebug("viterbi top_a:", top_a)
 
         expanding_nodes = []
         expanded_nodes = []
@@ -537,15 +481,6 @@ class BatchCKYParser:
         #A_cat_str = str(self.ix2cat[A_cat])
         a_str = "{}:{}".format(self.ix2cat[a_cat], self.ix2pred[a_pred])
 
-        # for debugging
-        if DEBUG:
-            _, top_a_p0 = torch.max(self.log_p0, dim=-1)
-            a_p0 = top_a_p0.item()
-            a_p0_pred, a_p0_cat = self.ix2predcat[a_p0]
-            printDebug("top predcat from prior: {}:{}".format(self.ix2cat[a_p0_cat], self.ix2pred[a_p0_pred]))
-            printDebug("top predcat:", a_str)
-        # /for debugging
-        
         assert not ( torch.isnan(a_ll[sent_index]) \
             or torch.isinf(a_ll[sent_index]) \
                 or a_ll[sent_index].item() == 0 ), \

@@ -1,4 +1,3 @@
-import bidict
 from itertools import product as prod
 
 
@@ -80,13 +79,6 @@ def generate_categories_by_depth(
     cs_dleq = dict()
     cs_dleq[-1] = {}
     cs_dleq[0] = {CGNode(str(p)) for p in range(num_primitives)}
-    ix2cat = bidict.bidict()
-    ix2depth = list()
-    # sorting ensures cats will be added to ix2cat in a consistent order
-    # across runs (for reproducibility)
-    for cat in sorted(cs_dleq[0]):
-        ix2cat[len(ix2cat)] = cat
-        ix2depth.append(0)
 
     for i in range(max_depth):
         cs_dleqi = cs_dleq[i]
@@ -104,10 +96,17 @@ def generate_categories_by_depth(
             for o in OPERATORS:
                 cs_deqiplus1.add(CGNode(o, res, arg))
         cs_dleq[i+1] = cs_dleq[i].union(cs_deqiplus1)
-        for cat in sorted(cs_deqiplus1):
-            ix2cat[len(ix2cat)] = cat
-            ix2depth.append(i+1)
-    return cs_dleq, ix2cat, ix2depth
+
+    all_cats =  cs_dleq[max_depth]
+    # res_cats (result cats) are the categories that can be
+    # a result from a functor applying to its argument.
+    # Since a functor's depth is one greater than the max depth between
+    # its argument and result, the max depth of a result
+    # is max_depth-1
+    res_cats = cs_dleq[max_depth-1]
+    # optionally constrain the complexity of argument categories
+    arg_cats = cs_dleq[max_arg_depth]
+    return all_cats, res_cats, arg_cats
 
 
 def category_from_string(string):
@@ -173,21 +172,9 @@ def read_categories_from_file(f):
             raise Exception("if category (res)(op)(arg) is in the list, res and arg must be in the list too")
         res_cats.add(res)
         arg_cats.add(arg)
-    # categories that can be arguments or results come first in ix2cat
-    ix2cat = bidict.bidict()
-    res_arg_cats = res_cats.union(arg_cats)
-    # NOTE I think this isn't necessary anymore (was used when res and arg cats
-    # were placed at the beginning of ix2cat)
-#    for cat in res_arg_cats:
-#        ix2cat[len(ix2cat)] = cat
-#    for cat in all_cats - res_arg_cats:
-#        ix2cat[len(ix2cat)] = cat
-    for cat in sorted(all_cats):
-        ix2cat[len(ix2cat)] = cat
-#    assert len(ix2cat) == len(all_cats)
-    return all_cats, res_cats, arg_cats, ix2cat
+    return all_cats, res_cats, arg_cats
 
-
+# TODO change this to a method of CGNode
 def arg_depth(category):
     """Return the number of arguments a syntactic category needs to result
     in a primitive. Modificands (e.g. combining with 0/0) are not treated as

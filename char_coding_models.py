@@ -95,6 +95,7 @@ class CharProbRNN(nn.Module):
 
 class WordProbFCFixVocabCompound(nn.Module):
     def __init__(self, num_words, state_dim, dropout=0.0):
+        printDebug("num_words:", num_words)
         super(WordProbFCFixVocabCompound, self).__init__()
         self.fc = nn.Sequential(nn.Linear(state_dim, state_dim),
                                        ResidualLayer(state_dim, state_dim),

@@ -1,4 +1,4 @@
-import torch, random, numpy as np, torch.nn.functional as F
+import torch, numpy as np, torch.nn.functional as F
 from bidict import bidict
 from collections import defaultdict
 from torch import nn
@@ -10,26 +10,20 @@ from cg_type import CGNode, generate_categories_by_depth, \
 
 QUASI_INF = 10000000.
 
-DEBUG = False
+DEBUG = True
 def printDebug(*args, **kwargs):
     if DEBUG:
         print("DEBUG: ", end="")
         print(*args, **kwargs)
 
 
-class Predicate:
-    def __init__(self, word, pos):
-        self.word = word
-        self.pos = pos
-
-    def __str__(self):
-        return "{}_{}".format(self.word, self.pos)
-
-    def __repr__(self):
-        return str(self)
-
-    def __lt__(self, other):
-        return str(self) < str(other)
+def readableIx2predCat(ix2predcat, ix2pred, ix2cat):
+    readable = bidict()
+    for i, (pix, cix) in ix2predcat.items():
+        pred = ix2pred[pix]
+        cat = ix2cat[cix]
+        readable[i] = (pred, cat)
+    return readable
 
 
 class BasicCGInducer(nn.Module):
@@ -38,11 +32,8 @@ class BasicCGInducer(nn.Module):
         self.state_dim = config.getint("state_dim")
         self.rnn_hidden_dim = config.getint("rnn_hidden_dim")
         self.model_type = config["model_type"]
-
-
         self.device = config["device"]
         self.eval_device = config["eval_device"]
-
         if self.model_type == 'char':
             self.emit_prob_model = CharProbRNN(
                 num_chars,
@@ -55,88 +46,68 @@ class BasicCGInducer(nn.Module):
             )
         else:
             raise ValueError("Model type should be char or word")
-
         self.num_primitives = config.getint("num_primitives", fallback=None)
         self.max_func_depth = config.getint("max_func_depth", fallback=None)
         self.max_arg_depth = config.getint("max_arg_depth", fallback=None)
         self.cats_list = config.get("category_list", fallback=None)
-        self.arg_depth_penalty = config.getfloat(
-            "arg_depth_penalty", fallback=None
-        )
+#        self.arg_depth_penalty = config.getfloat(
+#            "arg_depth_penalty", fallback=None
+#        )
         self.left_arg_penalty = config.getfloat(
             "left_arg_penalty", fallback=None
         )
 
-        # option 1: specify a set of categories according to maximum depth
-        # and number of primitives (used in 2023 ACL Findings paper)
-        if self.num_primitives is not None:
-            assert self.max_func_depth is not None
-            assert self.cats_list is None
-            if self.max_arg_depth is None:
-                self.max_arg_depth = self.max_func_depth - 1
-            self.init_cats_by_depth()
-
-        # option 2: specify a file with a list of categories
-        else:
-            assert self.cats_list is not None
-            # all of this stuff is just for option 1
-            assert self.max_func_depth is None
-            assert self.max_arg_depth is None
-            assert self.arg_depth_penalty is None
-            assert self.left_arg_penalty is None
-            self.init_cats_from_list()
-
-        # cat_arg_depths[i] gives the number of arguments taken by category
-        # ix2cat[i]
-        self.cat_arg_depths = get_category_argument_depths(self.ix2cat)
-
-        # arg_depth_to_cats[d] gives the set of categories (indices) with arg depth d
-        self.arg_depth_to_cats_res = defaultdict(set)
-        self.arg_depth_to_cats_arg = defaultdict(set)
-        for ix, depth in self.cat_arg_depths.items():
-            if self.ix2cat[ix] in self.res_cats:
-                self.arg_depth_to_cats_res[depth].add(ix)
-            if self.ix2cat[ix] in self.arg_cats:
-                self.arg_depth_to_cats_arg[depth].add(ix)
-
-
+        self.init_cats()
         self.init_predicates(config)
         self.init_predcats()
         self.init_association_matrix()
         self.init_masks()
         self.init_functor_lookup_tables()
 
+        torch.set_printoptions(precision=2, linewidth=120)
         printDebug("cat_arg_depths:", self.cat_arg_depths)
         printDebug("arg_depth_to_cats_res:", self.arg_depth_to_cats_res)
         printDebug("arg_depth_to_cats_arg:", self.arg_depth_to_cats_arg)
-        printDebug("ix2cat:", self.ix2cat)
+        printDebug("ix2cat_all:", self.ix2cat_all)
         printDebug("res_cats:", self.res_cats)
         printDebug("arg_cats:", self.arg_cats)
         printDebug("ix2pred:", self.ix2pred)
+        printDebug("ix2predcat:", readableIx2predCat(self.ix2predcat, self.ix2pred, self.ix2cat_all))
+        printDebug("ix2predcat_arg:", readableIx2predCat(self.ix2predcat_arg, self.ix2pred, self.ix2cat_all))
+        printDebug("ix2predcat_res:", readableIx2predCat(self.ix2predcat_res, self.ix2pred, self.ix2cat_all))
+        printDebug("argpc_2_pc:", self.argpc_2_pc)
 
-        # CG: "embeddings" for the categories are just one-hot vectors
-        # these are used for result categories
-        self.fake_emb = nn.Parameter(
+        # onehot embeddings for predcats
+        self.res_predcat_onehot = nn.Parameter(
             torch.eye(self.qres)
         )
-        state_dim = self.state_dim
-        # actual embeddings are used to calculate split scores
-        # (i.e. prob of terminal vs nonterminal)
-        self.nt_emb = nn.Parameter(
-            torch.randn(self.qall, state_dim)
+        # onehot embeddings for cats alone
+        self.res_cat_onehot = nn.Parameter(
+            torch.eye(self.cres)
         )
+        state_dim = self.state_dim
+       
         # embeddings for predicate-category pairs
-        self.predcat_emb = nn.Parameter(
+        # used to calculate split scores
+        self.all_predcat_emb = nn.Parameter(
             torch.randn(self.qall, state_dim)
         )
         # maps res_cat to arg_cat x {arg_on_L, arg_on_R}
         self.rule_mlp = nn.Linear(
-            self.qres,
-            2*self.qarg
+            self.cres,
+            2*self.carg
         )
 
         self.root_emb = nn.Parameter(torch.eye(1)).to(self.device)
         self.root_mlp = nn.Linear(1, self.qall).to(self.device)
+
+        # gives P(operation | res_predcat)
+        # options for operation: Aa, Ab (preceding and succeeding
+        # argument attachment)
+        # TODO add Ma and Mb (change 2 to 4)
+        self.operation_mlp = nn.Linear(
+            self.qres, 2
+        )
 
         # decides terminal or nonterminal
         self.split_mlp = nn.Sequential(
@@ -147,7 +118,7 @@ class BasicCGInducer(nn.Module):
         ).to(self.device)
 
         self.parser = BatchCKYParser(
-            ix2cat=self.ix2cat,
+            ix2cat=self.ix2cat_all,
             ix2pred=self.ix2pred,
             ix2predcat=self.ix2predcat,
             ix2predcat_res=self.ix2predcat_res,
@@ -164,46 +135,75 @@ class BasicCGInducer(nn.Module):
         )
 
 
-    def init_cats_by_depth(self):
-        cats_by_max_depth, ix2cat, ix2depth = generate_categories_by_depth(
-            self.num_primitives,
-            self.max_func_depth,
-            self.max_arg_depth
-        )
-        all_cats = cats_by_max_depth[self.max_func_depth]
-        # res_cats (result cats) are the categories that can be
-        # a result from a functor applying to its argument.
-        # Since a functor's depth is one greater than the max depth between
-        # its argument and result, the max depth of a result
-        # is self.max_func_depth-1
-        res_cats = cats_by_max_depth[self.max_func_depth-1]
-        # optionally constrain the complexity of argument categories
-        arg_cats = cats_by_max_depth[self.max_arg_depth]
+    def init_cats(self):
+        # option 1: specify a set of categories according to maximum depth
+        # and number of primitives (used in 2023 ACL Findings paper)
+        if self.num_primitives is not None:
+            assert self.max_func_depth is not None
+            assert self.cats_list is None
+            if self.max_arg_depth is None:
+                self.max_arg_depth = self.max_func_depth - 1
+            all_cats, res_cats, arg_cats = generate_categories_by_depth(
+                self.num_primitives,
+                self.max_func_depth,
+                self.max_arg_depth
+            )
 
+        # option 2: specify a file with a list of categories
+        else:
+            assert self.cats_list is not None
+            # all of this stuff is just for option 1
+            assert self.max_func_depth is None
+            assert self.max_arg_depth is None
+            assert self.left_arg_penalty is None
+            all_cats, res_cats, arg_cats = read_categories_from_file(
+                self.cats_list
+            )
+            
         self.all_cats = sorted(all_cats)
+        self.call = len(self.all_cats)
+        ix2cat_all = bidict()
+        for cat in self.all_cats:
+            ix2cat_all[len(ix2cat_all)] = cat
+        self.ix2cat_all = ix2cat_all
+            
         self.res_cats = sorted(res_cats)
+        self.cres = len(self.res_cats)
+        ix2cat_res = bidict()
+        for cat in self.res_cats:
+            ix2cat_res[len(ix2cat_res)] = cat
+        self.ix2cat_res = ix2cat_res
+
         self.arg_cats = sorted(arg_cats)
-        self.ix2cat = ix2cat
+        self.carg = len(self.arg_cats)
+        ix2cat_arg = bidict()
+        for cat in self.arg_cats:
+            ix2cat_arg[len(ix2cat_arg)] = cat
+        self.ix2cat_arg = ix2cat_arg
 
-        # WARNING: this assumes that the argument categories are the first
-        # len(arg_cats) categories in the full set (which may not be true)
-        if self.arg_depth_penalty:
-            printDebug("ix2depth: {}".format(ix2depth))
-            ix2depth_arg = torch.Tensor(ix2depth[:len(arg_cats)])
-            # dim: Qres x 2Qarg
-            arg_penalty_mat = -self.arg_depth_penalty \
-                * ix2depth_arg.tile((len(res_cats), 2))
-            self.arg_penalty_mat = arg_penalty_mat.to(self.device)
+        # NOTE: this code is deprecated. To reintroduce a penalty for argument
+        # depth, a get_depth method should be added to CGNode in cg_type.py,
+        # and then ix2depth should be defined here
+#        if self.arg_depth_penalty:
+#            printDebug("ix2depth: {}".format(ix2depth))
+#            ix2depth_arg = torch.Tensor(ix2depth[:len(arg_cats)])
+#            # dim: Qres x 2Qarg
+#            arg_penalty_mat = -self.arg_depth_penalty \
+#                * ix2depth_arg.tile((len(res_cats), 2))
+#            self.arg_penalty_mat = arg_penalty_mat.to(self.device)
 
-
-    def init_cats_from_list(self):
-        all_cats, res_cats, arg_cats, ix2cat = read_categories_from_file(
-            self.cats_list
-        )
-        self.all_cats = sorted(all_cats)
-        self.res_cats = sorted(res_cats)
-        self.arg_cats = sorted(arg_cats)
-        self.ix2cat = ix2cat
+        # cat_arg_depths[i] gives the number of arguments taken by category
+        # ix2cat_all[i]
+        self.cat_arg_depths = get_category_argument_depths(self.ix2cat_all)
+        # arg_depth_to_cats[d] gives the set of categories (indices) with arg depth d
+        # used when building association matrix
+        self.arg_depth_to_cats_res = defaultdict(set)
+        self.arg_depth_to_cats_arg = defaultdict(set)
+        for ix, depth in self.cat_arg_depths.items():
+            if self.ix2cat_all[ix] in self.res_cats:
+                self.arg_depth_to_cats_res[depth].add(ix)
+            if self.ix2cat_all[ix] in self.arg_cats:
+                self.arg_depth_to_cats_arg[depth].add(ix)
 
 
     def init_predicates(self, config):
@@ -245,7 +245,6 @@ class BasicCGInducer(nn.Module):
             preds_by_role_count[count].add(p)
 
         ix2pred = bidict(enumerate(sorted(predicates)))
-
         self.ix2pred = ix2pred
         self.preds_by_role_count = preds_by_role_count
         self.pred_role_counts = pred_role_counts
@@ -257,13 +256,13 @@ class BasicCGInducer(nn.Module):
         max_pred_role_count = max(self.preds_by_role_count)
         # ix2predcat assigns an index to each valid (predicate, category)
         # pair. E.g., if the index of (DOG, 1/0) is 5, then
-        # ix2predcat[5] = (ix2pred.inv[DOG], ix2pred.inv[1/0])
+        # ix2predcat[5] = (ix2pred.inv[DOG], ix2cat_all.inv[1/0])
         ix2predcat = bidict()
         # preds_per_cat[i] is the number of different predicates that
-        # could be assigned to category ix2cat[i]
+        # could be assigned to category ix2cat_all[i]
         preds_per_cat = defaultdict(set)
         for c in self.all_cats:
-            c_ix = self.ix2cat.inv[c]
+            c_ix = self.ix2cat_all.inv[c]
             arg_depth = self.cat_arg_depths[c_ix]
             for i in range(arg_depth, max_pred_role_count+1):
                 preds_with_i_args = self.preds_by_role_count[i]
@@ -275,7 +274,7 @@ class BasicCGInducer(nn.Module):
         ix2predcat_res = bidict()
         res_preds_per_cat = defaultdict(set)
         for c in self.res_cats:
-            c_ix = self.ix2cat.inverse[c]
+            c_ix = self.ix2cat_all.inverse[c]
             arg_depth = self.cat_arg_depths[c_ix]
             # NOTE: a predicate must have at least n+1 roles to appear with a
             # category of arg depth n. This means that e.g. DOG cannot appear as a
@@ -287,12 +286,11 @@ class BasicCGInducer(nn.Module):
                     p_ix = self.ix2pred.inv[p]
                     ix2predcat_res[len(ix2predcat_res)] = (p_ix, c_ix)
                     res_preds_per_cat[c_ix].add(p)
-        printDebug("ix2predcat_res:", ix2predcat_res)
 
         ix2predcat_arg = bidict()
         arg_preds_per_cat = defaultdict(set)
         for c in self.arg_cats:
-            c_ix = self.ix2cat.inverse[c]
+            c_ix = self.ix2cat_all.inverse[c]
             arg_depth = self.cat_arg_depths[c_ix]
             for i in range(arg_depth, max_pred_role_count+1):
                 preds_with_i_args = self.preds_by_role_count[i]
@@ -300,36 +298,35 @@ class BasicCGInducer(nn.Module):
                     p_ix = self.ix2pred.inv[p]
                     ix2predcat_arg[len(ix2predcat_arg)] = (p_ix, c_ix)
                     arg_preds_per_cat[c_ix].add(p)
-        printDebug("ix2predcat_arg:", ix2predcat_arg)
 
         # maps index of an arg predcat to its index in the full set of predcats
         # used during viterbi parsing
-        # could also define this for res predcats but it doesn't seem necessary
         argpc_2_pc = [ix2predcat.inv[ix2predcat_arg[i]] for i in range(len(ix2predcat_arg))]
-        printDebug("argpc_2_pc:", argpc_2_pc)
+        # maps index of a res predcat to its index in the full set of predcats
+        # used to select split scores for binary-branching nodes
+        respc_2_pc = [ix2predcat.inv[ix2predcat_res[i]] for i in range(len(ix2predcat_res))]
 
         self.pred_counts = torch.tensor(
-            [len(preds_per_cat[self.ix2cat.inv[c]]) for c in self.all_cats]
+            [len(preds_per_cat[self.ix2cat_all.inv[c]]) for c in self.all_cats]
         ).to(self.device)
         # total number of predcats, i.e. (predicate, category) pairs
         self.res_pred_counts = torch.tensor(
-            [len(res_preds_per_cat[self.ix2cat.inv[c]]) for c in self.res_cats]
+            [len(res_preds_per_cat[self.ix2cat_all.inv[c]]) for c in self.res_cats]
         ).to(self.device)
         self.arg_pred_counts = torch.tensor(
-            [len(arg_preds_per_cat[self.ix2cat.inv[c]]) for c in self.arg_cats]
+            [len(arg_preds_per_cat[self.ix2cat_all.inv[c]]) for c in self.arg_cats]
         ).to(self.device)
         self.ix2predcat = ix2predcat
         self.ix2predcat_res = ix2predcat_res
         self.ix2predcat_arg = ix2predcat_arg
         self.argpc_2_pc = torch.tensor(argpc_2_pc).to(self.device)
+        self.respc_2_pc = torch.tensor(respc_2_pc).to(self.device)
         self.qall = sum(self.pred_counts).item()
         self.qres = sum(self.res_pred_counts).item()
         self.qarg = sum(self.arg_pred_counts).item()
 
 
     def init_association_matrix(self):
-        # TODO arg_depth_to_cats needs to be corrected to be different for
-        # res and arg (depth-k res cats are not relevant for arg)
         #### define association matrix
         # TODO H_res and H_arg should prolly use indices rather than
         # raw predicates, for consistency with how categories are handled
@@ -341,11 +338,11 @@ class BasicCGInducer(nn.Module):
         H_res = self.arg1_assoc.keys()
         for h_res in H_res:
             h_res_ix = self.ix2pred.inv[h_res]
-            # the result category should have 1 remaining argument for arg1
+            # the result category should have 0 remaining arguments for arg1
             # attachment
             C_res = self.arg_depth_to_cats_res[0]
             H_arg = sorted(self.arg1_assoc[h_res].keys())
-            C_arg = [self.ix2cat.inv[c] for c in self.arg_cats]
+            C_arg = [self.ix2cat_all.inv[c] for c in self.arg_cats]
             H_arg_bd = bidict(enumerate(H_arg))
             raw_scores = torch.tensor([self.arg1_assoc[h_res][h] for h in H_arg])
             scores = torch.log_softmax(raw_scores, dim=0)
@@ -367,7 +364,7 @@ class BasicCGInducer(nn.Module):
             # attachment
             C_res = self.arg_depth_to_cats_res[1]
             H_arg = sorted(self.arg2_assoc[h_res].keys())
-            C_arg = [self.ix2cat.inv[c] for c in self.arg_cats]
+            C_arg = [self.ix2cat_all.inv[c] for c in self.arg_cats]
             H_arg_bd = bidict(enumerate(H_arg))
             raw_scores = torch.tensor([self.arg2_assoc[h_res][h] for h in H_arg])
             scores = torch.log_softmax(raw_scores, dim=0)
@@ -380,9 +377,6 @@ class BasicCGInducer(nn.Module):
                         col = self.ix2predcat_arg.inv[(h_arg_ix, c_arg)]
                         assert self.associations[row, col] == -QUASI_INF
                         self.associations[row, col] = score
-
-        torch.set_printoptions(precision=2, linewidth=120)
-        printDebug("initial associations:", self.associations)
 
 
     def init_masks(self):
@@ -399,9 +393,9 @@ class BasicCGInducer(nn.Module):
 
         # TODO move some of this to functor lookup tables
         for res in self.res_cats:
-            res_ix = self.ix2cat.inverse[res]
+            res_ix = self.ix2cat_all.inverse[res]
             for arg in self.arg_cats:
-                arg_ix = self.ix2cat.inverse[arg]
+                arg_ix = self.ix2cat_all.inverse[arg]
                 # TODO don't hard-code operator
                 lfunc = CGNode("-b", res, arg)
                 if lfunc not in self.all_cats:
@@ -429,7 +423,7 @@ class BasicCGInducer(nn.Module):
         ).to(self.device)
         for ix in range(self.qall):
             pred_ix, cat_ix = self.ix2predcat[ix]
-            cat = self.ix2cat[cat_ix]
+            cat = self.ix2cat_all[cat_ix]
             if (pred_ix, cat_ix) in self.ix2predcat_res.values() \
                 and cat.is_primitive():
                 root_mask[ix] = 0
@@ -456,10 +450,10 @@ class BasicCGInducer(nn.Module):
         for res_pc_ix, (res_p_ix, res_c_ix) in self.ix2predcat_res.items():
             for arg_pc_ix, (_, arg_c_ix) \
                 in self.ix2predcat_arg.items():
-                res_c = self.ix2cat[res_c_ix]
-                arg_c = self.ix2cat[arg_c_ix]
+                res_c = self.ix2cat_all[res_c_ix]
+                arg_c = self.ix2cat_all[arg_c_ix]
                 lfunc_c = CGNode("-b", res_c, arg_c)
-                lfunc_c_ix = self.ix2cat.inv[lfunc_c]
+                lfunc_c_ix = self.ix2cat_all.inv[lfunc_c]
                 # predicate for functor category is the same as predicate for
                 # result category. NOTE: this works for argument attachment
                 # but won't work for modifier attachment
@@ -467,7 +461,7 @@ class BasicCGInducer(nn.Module):
                 lfunc_pc_ix = self.ix2predcat.inv[(lfunc_p_ix, lfunc_c_ix)]
                 lfunc_ixs[res_pc_ix, arg_pc_ix] = lfunc_pc_ix
                 rfunc_c = CGNode("-a", res_c, arg_c)
-                rfunc_c_ix = self.ix2cat.inv[rfunc_c]
+                rfunc_c_ix = self.ix2cat_all.inv[rfunc_c]
                 rfunc_p_ix = res_p_ix
                 rfunc_pc_ix = self.ix2predcat.inv[(rfunc_p_ix, rfunc_c_ix)]
                 rfunc_ixs[res_pc_ix, arg_pc_ix] = rfunc_pc_ix
@@ -489,59 +483,101 @@ class BasicCGInducer(nn.Module):
             root_scores = F.log_softmax(self.root_mask, dim=0)
             full_p0 = root_scores
 
-            # dim: Qres x 2Qarg
-            mlp_out = self.rule_mlp(self.fake_emb)
-            if self.arg_depth_penalty:
-                mlp_out += self.arg_penalty_mat
+            # dim: Qres x 2 (assuming 2 available operations)
+            operation_scores = self.operation_mlp(self.res_predcat_onehot)
+            operation_probs = F.log_softmax(operation_scores, dim=1)
+            # dim: Qres
+            op_Aa_probs = operation_probs[:, 0]
+            # dim: Qres
+            op_Ab_probs = operation_probs[:, 1]
+
+            # dim: Cres x 2Carg
+            mlp_out = self.rule_mlp(self.res_cat_onehot)
+#            if self.arg_depth_penalty:
+#                mlp_out += self.arg_penalty_mat
 
             # penalizes rules that use backward function application
             # (in practice encourages right-branching structures)
             if self.left_arg_penalty:
                 larg_penalty = torch.full(
-                    (self.qres, self.qarg),
+                    (self.cres, self.carg),
                     -self.left_arg_penalty
                 )
-                rarg_penalty = torch.full((self.qres, self.qarg), 0)
-                # dim: Qres x 2Qarg
+                rarg_penalty = torch.full((self.cres, self.carg), 0)
+                # dim: Cres x 2Carg
                 penalty = torch.concat(
                     [larg_penalty, rarg_penalty], dim=1
                 ).to(self.device)
                 mlp_out += penalty
 
-            # dim: Qres x 2Qarg
-            rule_scores = F.log_softmax(mlp_out, dim=1)
-            # dim: Qres x Qarg
-            rule_scores_larg = rule_scores[:, :self.qarg]
-            # dim: Qres x Qarg
-            rule_scores_rarg = rule_scores[:, self.qarg:]
+            # dim: Cres x Carg
+            # probabilities for binary-branching nodes where preceding
+            # argument attachment (Aa) happens
+            rule_scores_Aa = mlp_out[:, :self.carg]
+            rule_probs_Aa = F.log_softmax(rule_scores_Aa, dim=1)
 
-            nt_emb = self.nt_emb
-            # dim: Qfunc x 2
+            # dim: Cres x Carg
+            # probabilities for binary-branching nodes where succeeding
+            # argument attachment (Ab) happens
+            rule_scores_Ab = mlp_out[:, self.carg:]
+            rule_probs_Ab = F.log_softmax(rule_scores_Ab, dim=1)
+
+            # expand rule probabilities from Cres x Carg to Qres x Qarg
+            # first expand to Qres x Carg...
+            cat_ixs_res = [c_ix for _, c_ix in self.ix2predcat_res.values()]
+            cats_res = [self.ix2cat_all[ix] for ix in cat_ixs_res]
+            cat_ixs_res = [self.ix2cat_res.inv[c] for c in cats_res]
+            cat_ixs_row = torch.tensor(cat_ixs_res).to(self.device)
+            cat_ixs_row = cat_ixs_row.unsqueeze(dim=1).repeat(1, self.carg)
+            rule_probs_Aa = rule_probs_Aa.gather(dim=0, index=cat_ixs_row)
+            rule_probs_Ab = rule_probs_Ab.gather(dim=0, index=cat_ixs_row)
+
+            # ...then expand to Qres x Qarg
+            cat_ixs_arg = [c_ix for _, c_ix in self.ix2predcat_arg.values()]
+            cats_arg = [self.ix2cat_all[ix] for ix in cat_ixs_arg]
+            cat_ixs_arg = [self.ix2cat_arg.inv[c] for c in cats_arg]
+            cat_ixs_col = torch.tensor(cat_ixs_arg).to(self.device)
+            cat_ixs_col = cat_ixs_col.unsqueeze(dim=0).repeat(self.qres, 1)
+            rule_probs_Aa = rule_probs_Aa.gather(dim=1, index=cat_ixs_col)
+            rule_probs_Ab = rule_probs_Ab.gather(dim=1, index=cat_ixs_col)
+
+            # dim: Qall x 2
+            split_scores = self.split_mlp(self.all_predcat_emb)
+
+            # dim: Qall x 2
             # split_scores[:, 0] gives P(terminal=0 | cat)
             # split_scores[:, 1] gives P(terminal=1 | cat)
-            split_scores = F.log_softmax(self.split_mlp(nt_emb), dim=1)
+            split_probs = F.log_softmax(split_scores, dim=1)
 
+            respc_ix = self.respc_2_pc.unsqueeze(dim=1).repeat(1, 2)
+            # terminal/nonterminal probabilities for res cats (which 
+            # are the ones that can undergo terminal expansion)
+            # dim: Qres x 2
+            split_probs_res = split_probs.gather(dim=0, index=respc_ix)
+            
             # dim: Qres x Qarg
-            full_G_larg = rule_scores_larg \
-                + split_scores[:self.qres, 0][..., None]
-            full_G_rarg = rule_scores_rarg \
-                + split_scores[:self.qres, 0][..., None]
+            full_G_Aa = split_probs_res[:, 0][..., None] \
+                + op_Aa_probs[..., None] \
+                + self.associations \
+                + rule_probs_Aa
+            full_G_Ab = split_probs_res[:, 0][..., None] \
+                + op_Ab_probs[..., None] \
+                + self.associations \
+                + rule_probs_Ab
 
             self.parser.set_models(
                 full_p0,
-                full_G_larg,
-                full_G_rarg,
-                self.associations,
-                split_scores
+                full_G_Aa,
+                full_G_Ab,
+                split_probs
             )
 
 
         if self.model_type == 'word':
-            x = self.emit_prob_model(x, self.predcat_emb, set_grammar=set_grammar)
-        # TODO add predicate embedding to word model
+            x = self.emit_prob_model(x, self.all_predcat_emb, set_grammar=set_grammar)
         else:
             assert self.model_type == "char"
-            x = self.emit_prob_model(x, self.nt_emb, set_grammar=set_grammar)
+            x = self.emit_prob_model(x, self.all_predcat_emb, set_grammar=set_grammar)
 
         if argmax:
             if eval and self.device != self.eval_device:
