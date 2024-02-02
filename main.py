@@ -30,7 +30,8 @@ DEFAULT_CONFIG = {
         "model_type": "word",
         "rnn_hidden_dim": 512,
         "state_dim": 64,
-        "eval_patient": 5
+        "eval_patient": 5,
+        "loss_type": "marginal"
     }
 }
 
@@ -122,17 +123,6 @@ def setup(eval_only=False):
     logging.info('training instance: {}, training tokens: {}.'.format(
         len(train_sents), sum([len(s) - 1 for s in train_sents])
     ))
-
-    #with open(config["train_gold_path"]) as tfh:
-    #    train_tree_list = [x.strip() for x in tfh]
-
-    #train_data, valid_data, train_tree_list, valid_tree_list = preprocess.divide(
-    #    train_data,
-    #    int(config["valid_size"]),
-    #    train_tree_list,
-    #    include_valid_in_train=False,
-    #    all_train_as_valid=True
-    #) # INCLUDE VALID IN TRAIN TO REDUCE TIME
 
     valid_sents_path = config.get("valid_sents", fallback=None)
     if valid_sents_path is None:

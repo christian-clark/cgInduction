@@ -32,6 +32,7 @@ class BasicCGInducer(nn.Module):
         self.state_dim = config.getint("state_dim")
         self.rnn_hidden_dim = config.getint("rnn_hidden_dim")
         self.model_type = config["model_type"]
+        self.loss_type = config["loss_type"]
         self.device = config["device"]
         self.eval_device = config["eval_device"]
         if self.model_type == 'char':
@@ -470,7 +471,7 @@ class BasicCGInducer(nn.Module):
         self.rfunc_ixs = rfunc_ixs.to(self.device)
 
         
-    def forward(self, x, eval=False, argmax=False, use_mean=False, indices=None, set_grammar=True, return_ll=True, **kwargs):
+    def forward(self, x, eval=False, argmax=False, indices=None, set_grammar=True):
         # x : batch x n
         if set_grammar:
             # dim: Qall
@@ -572,7 +573,6 @@ class BasicCGInducer(nn.Module):
                 split_probs
             )
 
-
         if self.model_type == 'word':
             x = self.emit_prob_model(x, self.all_predcat_emb, set_grammar=set_grammar)
         else:
@@ -585,12 +585,18 @@ class BasicCGInducer(nn.Module):
                 self.parser.device = self.eval_device
             with torch.no_grad():
                 logprob_list, vtree_list, vproduction_counter_dict_list, vlr_branches_list = \
-                    self.parser.marginal(x, viterbi_flag=True, only_viterbi=not return_ll, sent_indices=indices)
+                    self.parser.get_logprobs(
+                        x, loss_type=self.loss_type, viterbi_trees=True
+                    )
             if eval and self.device != self.eval_device:
                 self.parser.device = self.device
                 print("Moving model back to {}".format(self.device))
-            return logprob_list, vtree_list, vproduction_counter_dict_list, vlr_branches_list
+
         else:
-            logprob_list, _, _, _ = self.parser.marginal(x)
+            logprob_list, vtree_list, vproduction_counter_dict_list, vlr_branches_list = \
+                self.parser.get_logprobs(
+                    x, loss_type=self.loss_type
+                )
+            # TODO is it really necessary to do this only for non-argmax?
             logprob_list = logprob_list * (-1)
-            return logprob_list
+        return logprob_list, vtree_list, vproduction_counter_dict_list, vlr_branches_list

@@ -61,45 +61,44 @@ class BatchCKYParser:
         self.log_p0 = p0
         self.split_scores = split_scores
 
-
-    def marginal(self, sents, viterbi_flag=False, only_viterbi=False, sent_indices=None):
-        self.sent_indices = sent_indices
-
-        if not only_viterbi:
-            self.compute_inside_logspace(sents)
-            logprob_list = self.marginal_likelihood_logspace(sents)
+    
+    def get_logprobs(
+            self, sents, loss_type="marginal", viterbi_trees=False
+        ):
+        # TODO maybe the two compute_inside_ methods can be merged?
+        if loss_type == "marginal":
+            left_chart, backtrack_chart = self.compute_inside_marginal(sents)
         else:
-            logprob_list = []
-        self.viterbi_sent_indices = self.sent_indices
-        self.sent_indices = None
-        if viterbi_flag:
+            assert loss_type == "best_parse"
+            left_chart, backtrack_chart = self.compute_inside_bestparse(sents)
+    
+        logprob_list = self.likelihood_from_chart(left_chart, loss_type)
+        if viterbi_trees:
+            vtree_list = list()
+            vproduction_counter_dict_list = list()
+            vlr_branches_list = list()
             with torch.no_grad():
-                vnodes = []
+                # compute_inside_marginal() doesn't produce a backtrack chart
+                if backtrack_chart is None:
+                    left_chart, backtrack_chart = self.compute_inside_bestparse(sents)
+                printDebug("left chart used for viterbi backtracking")
+                printDebug(left_chart)
                 for sent_index, sent in enumerate(sents):
-                    sent = sent.unsqueeze(0)
-                    self.sent_indices = [self.viterbi_sent_indices[sent_index],]
-                    backchart = self.compute_viterbi_inside(sent)
-                    this_vnodes = self.viterbi_backtrack(backchart, sent)
-                    vnodes += this_vnodes
-
-        self.this_sent_len = -1
-
-        vtree_list, vproduction_counter_dict_list, vlr_branches_list = [], [], []
-
-        if viterbi_flag:
-            for sent_index, sent in enumerate(sents):
-                vthis_tree, vproduction_counter_dict, vlr_branches = nodes_to_tree(vnodes[sent_index], sent)
-                vtree_list.append(vthis_tree)
-                vproduction_counter_dict_list.append(vproduction_counter_dict)
-                vlr_branches_list.append(vlr_branches)
+                    this_vnodes = self.viterbi_backtrack(left_chart, backtrack_chart, sent_index)
+                    printDebug("this_vnodes", this_vnodes)
+                    vthis_tree, vproduction_counter_dict, vlr_branches = nodes_to_tree(this_vnodes, sent)
+                    vtree_list.append(vthis_tree)
+                    vproduction_counter_dict_list.append(vproduction_counter_dict)
+                    vlr_branches_list.append(vlr_branches)
         else:
-            vtree_list, vproduction_counter_dict_list, vlr_branches_list = [None]*len(sents), [None]*len(sents), \
-                                                                 [None]*len(sents)
+            vtree_list = None
+            vproduction_counter_dict_list = None
+            vlr_branches_list = None
 
         return logprob_list, vtree_list, vproduction_counter_dict_list, vlr_branches_list
 
 
-    def compute_inside_logspace(self, sents):
+    def compute_inside_marginal(self, sents):
         try:
             self.this_sent_len = len(sents[0])
         except:
@@ -110,14 +109,14 @@ class BatchCKYParser:
 
         # left chart is the left right triangle of the chart, the top row is the lexical items, and the bottom cell is the
         #  top cell. The right chart is the left chart pushed against the right edge of the chart. The chart is a square.
-        self.left_chart = torch.zeros(
+        left_chart = torch.zeros(
             (sent_len, sent_len, batch_size, self.Qall)
         ).float().to(self.device)
-        self.right_chart = torch.zeros(
+        right_chart = torch.zeros(
             (sent_len, sent_len, batch_size, self.Qall)
         ).float().to(self.device)
-        self.set_lexical_prob(sents, self.left_chart)
-        self.right_chart[0] = self.left_chart[0]
+        self.set_lexical_prob(sents, left_chart)
+        right_chart[0] = left_chart[0]
 
         for ij_diff in range(1, sent_len):
             imin = 0
@@ -128,9 +127,9 @@ class BatchCKYParser:
 
             # a square of the left chart
             # dim: height x imax x batch_size x Qall
-            b = self.left_chart[0:height, imin:imax]
+            b = left_chart[0:height, imin:imax]
             # dim: height x imax x batch_size x Qall
-            c = torch.flip(self.right_chart[0:height, jmin:jmax], dims=[0])
+            c = torch.flip(right_chart[0:height, jmin:jmax], dims=[0])
             
             # indices for predcats that can be arguments
             arg_ixs = torch.tensor(
@@ -235,36 +234,50 @@ class BatchCKYParser:
             )
             # dim: imax x batch_size x Qall
             y1_expanded = y1_expanded.scatter(dim=-1, index=res_ixs, src=y1)
-            self.left_chart[height, imin:imax] = y1_expanded
-            self.right_chart[height, jmin:jmax] = y1_expanded
-        return
+            left_chart[height, imin:imax] = y1_expanded
+            right_chart[height, jmin:jmax] = y1_expanded
+        return left_chart, None
 
 
-    def marginal_likelihood_logspace(self, sents):
+    def likelihood_from_chart(self, left_chart, loss_type):
         sent_len = self.this_sent_len
-        topnode_pdf = self.left_chart[sent_len-1, 0]
-
-        # draw the top node
+        # dim: batch_size x Qall
+        topnode_pdf = left_chart[sent_len-1, 0]
+        # dim: batch_size x Qall
         p_topnode = topnode_pdf + self.log_p0
-        logprob_e = torch.logsumexp(p_topnode, dim=1)
-        logprobs = logprob_e # / np.log(10)
-
+        if loss_type == "marginal":
+            logprobs = torch.logsumexp(p_topnode, dim=1)
+        else:
+            assert loss_type == "best_parse"
+            logprobs, _ = torch.max(p_topnode, dim=1)
         return logprobs
 
 
-    def compute_viterbi_inside(self, sent):
-        self.this_sent_len = sent.shape[1]
-        batch_size = 1
+    def compute_inside_bestparse(self, sents):
+        try:
+            self.this_sent_len = len(sents[0])
+        except:
+            print(sents)
+            raise
+        batch_size = len(sents)
         sent_len = self.this_sent_len
-        self.left_chart = torch.zeros(
+
+        left_chart = torch.zeros(
             (sent_len, sent_len, batch_size, self.Qall)
         ).float().to(self.device)
-        self.right_chart = torch.zeros(
+        right_chart = torch.zeros(
             (sent_len, sent_len, batch_size, self.Qall)
         ).float().to(self.device)
-        backtrack_chart = {}
-        self.set_lexical_prob(sent, self.left_chart)
-        self.right_chart[0] = self.left_chart[0]
+        # TODO make backtrack_chart a tensor
+        #backtrack_chart = {}
+        # backtrack_chart[ijdiff, i, s, a] is the most probable kbc
+        # (split point, left child, right child) for parent category a
+        # spanning words i...(i+ijdiff) in sentence s
+        backtrack_chart = torch.zeros(
+            sent_len, sent_len, batch_size, self.Qres, 3
+        ).int().to(self.device)
+        self.set_lexical_prob(sents, left_chart)
+        right_chart[0] = left_chart[0]
 
         for ij_diff in range(1, sent_len):
             imin = 0
@@ -275,9 +288,9 @@ class BatchCKYParser:
 
             # a square of the left chart
             # dim: height x imax x batch_size x Qall
-            b = self.left_chart[0:height, imin:imax]
+            b = left_chart[0:height, imin:imax]
             # dim: height x imax x batch_size x Qall
-            c = torch.flip(self.right_chart[0:height, jmin:jmax], dims=[0])
+            c = torch.flip(right_chart[0:height, jmin:jmax], dims=[0])
 
             # indices for predcats that can be arguments
             arg_ixs = torch.tensor(
@@ -289,7 +302,8 @@ class BatchCKYParser:
             )
 
             # dim: height x imax x batch_size x Qarg
-            b_arg = b.gather(dim=-1, index=arg_ixs)
+            #b_arg = b.gather(dim=-1, index=arg_ixs)
+            b_arg = b.clone().gather(dim=-1, index=arg_ixs)
             # probability of argument i on the left followed by functor j
             # on the right
             # dim: height x imax x batch_size x Qall x Qarg
@@ -436,8 +450,8 @@ class BatchCKYParser:
             )
             combined_max_expanded.scatter_(dim=-1, index=res_ixs, src=combined_max)
 
-            self.left_chart[height, imin:imax] = combined_max_expanded
-            self.right_chart[height, jmin:jmax] = combined_max_expanded
+            left_chart[height, imin:imax] = combined_max_expanded
+            right_chart[height, jmin:jmax] = combined_max_expanded
 
             # gather k, b, and c
             # dim: 1 x 3 x imax x batch_size x Qres
@@ -448,20 +462,13 @@ class BatchCKYParser:
             best_kbc = torch.gather(lr_kbc, index=combined_argmax, dim=0).squeeze(dim=0)
             # dim: imax x batch_size x Qres x 3
             best_kbc = best_kbc.permute(1, 2, 3, 0)
-            backtrack_chart[ij_diff] = best_kbc
-        self.right_chart = None
-        return backtrack_chart
+            backtrack_chart[ij_diff][:imax] = best_kbc
+        return left_chart, backtrack_chart
 
 
-    # TODO sent doesn't seem to be a necessary arg
-    def viterbi_backtrack(self, backtrack_chart, sent, max_cats=None):
-        sent_index = 0
-        nodes_list = []
+    def viterbi_backtrack(self, left_chart, backtrack_chart, sent_index):
         sent_len = self.this_sent_len
-        topnode_pdf = self.left_chart[sent_len-1, 0]
-        if max_cats is not None:
-            max_cats = max_cats.squeeze()
-            max_cats = max_cats.tolist()
+        topnode_pdf = left_chart[sent_len-1, 0]
 
         # draw the top node
         p_topnode = topnode_pdf + self.log_p0
@@ -516,20 +523,14 @@ class BatchCKYParser:
             if node_b.s != 0 and node_c.s != 1:
                 raise Exception("{}, {}".format(node_b, node_c))
             if node_b.is_terminal():
-                if max_cats is not None:
-                    node_b.k = str(node_b.k) + '|' + str(max_cats[node_b.i][node_b.k])
                 expanded_nodes.append(node_b)
-
             else:
                 expanding_nodes.append(node_b)
             if node_c.is_terminal():
-                if max_cats is not None:
-                    node_c.k = str(node_c.k) + '|' + str(max_cats[node_c.i][node_c.k])
                 expanded_nodes.append(node_c)
             else:
                 expanding_nodes.append(node_c)
-        nodes_list.append(expanded_nodes)
-        return nodes_list
+        return expanded_nodes
 
 
     def set_lexical_prob(self, sent_embs, left_chart):

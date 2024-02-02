@@ -1,7 +1,6 @@
 import torch.nn as nn
 import torch.distributions
 from torch.utils.tensorboard import SummaryWriter
-from treenode import convert_binary_matrix_to_strtree
 
 DEBUG = False
 
@@ -18,20 +17,16 @@ class TopModel(nn.Module):
         self.writer = writer
 
 
-    def forward(self, word_inp, chars_var_inp, distance_penalty_weight=0.):
+    def forward(self, word_inp, chars_var_inp):
         if self.inducer.model_type == "char":
-            logprob_list = self.inducer.forward(chars_var_inp, words=word_inp)
+            logprob_list, _, _, _ = self.inducer.forward(
+                chars_var_inp, words=word_inp
+            )
         else:
             assert self.inducer.model_type == 'word'
-            logprob_list = self.inducer.forward(word_inp)
-
-        total_num_chars = sum(
-            [sum([x.numel() for x in y]) for y in chars_var_inp]
-        )
+            logprob_list, _, _, _ = self.inducer.forward(word_inp)
         structure_loss = torch.sum(logprob_list, dim=0)
-
-        total_loss = structure_loss
-        return total_loss
+        return structure_loss
 
 
     def parse(self, word_inp, chars_var_inp, indices, eval=False, set_grammar=True):
