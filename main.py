@@ -8,7 +8,7 @@ from torch.utils.tensorboard import SummaryWriter
 import preprocess, postprocess, model_use
 from top_models import TopModel
 from eval.eval_access import eval_access
-from cg_inducer import BasicCGInducer
+from cg_inducer import BasicCGInducer, readableIx2predCat
 
 
 DEFAULT_CONFIG = {
@@ -31,7 +31,9 @@ DEFAULT_CONFIG = {
         "rnn_hidden_dim": 512,
         "state_dim": 64,
         "eval_patient": 5,
-        "loss_type": "marginal"
+        "loss_type": "marginal",
+        "dump_grammar": "yes",
+        "modification_ops": "no"
     }
 }
 
@@ -218,10 +220,10 @@ def setup(eval_only=False):
         "Total number of categories: {}".format(len(parser.all_cats))
     )
     logging.info(
-        "Number of argument categories: {}".format(len(parser.arg_cats))
+        "Number of genchild categories: {}".format(len(parser.gen_cats))
     )
     logging.info(
-        "Number of result categories: {}".format(len(parser.res_cats))
+        "Number of parent categories: {}".format(len(parser.par_cats))
     )
     logging.info(
         "Examples of categories: {}".format(list(parser.ix2cat_all.values())[:100])
@@ -320,41 +322,57 @@ def train():
                 if patient >= config.getint("eval_patient"):
                     break
 
-            torch.set_printoptions(sci_mode=False, linewidth=300)
-            printDebug("p0 probs")
-            printDebug(torch.exp(model.inducer.parser.log_p0))
+            if config.getboolean("dump_grammar"):
+                logging.info("======== START GRAMMAR DUMP ========")
+                #torch.set_printoptions(precision=2, linewidth=120)
+                torch.set_printoptions(sci_mode=False, precision=2, linewidth=300)
+                logging.info("cat_arg_depths: {}".format(model.inducer.cat_arg_depths))
+                logging.info("arg_depth_to_cats_par: {}".format(model.inducer.arg_depth_to_cats_par))
+                logging.info("arg_depth_to_cats_gen: {}".format(model.inducer.arg_depth_to_cats_gen))
+                logging.info("ix2cat_all: {}".format(model.inducer.ix2cat_all))
+                logging.info("par_cats: {}".format(model.inducer.par_cats))
+                logging.info("gen_cats: {}".format(model.inducer.gen_cats))
+                logging.info("ix2pred: {}".format(model.inducer.ix2pred))
+                logging.info("ix2predcat: {}".format(readableIx2predCat(model.inducer.ix2predcat, model.inducer.ix2pred, model.inducer.ix2cat_all)))
+                logging.info("ix2predcat_gen: {}".format(readableIx2predCat(model.inducer.ix2predcat_gen, model.inducer.ix2pred, model.inducer.ix2cat_all)))
+                logging.info("ix2predcat_par: {}".format(readableIx2predCat(model.inducer.ix2predcat_par, model.inducer.ix2pred, model.inducer.ix2cat_all)))
+                logging.info("genpc_2_pc: {}".format(model.inducer.genpc_2_pc))
 
-            printDebug("split probs")
-            printDebug(torch.exp(model.inducer.parser.split_scores))
+                logging.info("p0 probs")
+                logging.info(torch.exp(model.inducer.parser.log_p0))
 
-            operation_scores = model.inducer.operation_mlp(model.inducer.res_predcat_onehot)
-            operation_probs = F.log_softmax(operation_scores, dim=1)
-            printDebug("operation probs")
-            printDebug(torch.exp(operation_probs))
+                logging.info("split probs")
+                logging.info(torch.exp(model.inducer.parser.split_scores))
 
-            printDebug("association probs")
-            printDebug(torch.exp(model.inducer.associations))
+                operation_scores = model.inducer.operation_mlp(model.inducer.par_predcat_onehot)
+                operation_probs = F.log_softmax(operation_scores, dim=1)
+                logging.info("operation probs")
+                logging.info(torch.exp(operation_probs))
 
-            mlp_out = model.inducer.rule_mlp(model.inducer.res_cat_onehot)
-            rule_scores_Aa = mlp_out[:, :model.inducer.carg]
-            rule_probs_Aa = F.log_softmax(rule_scores_Aa, dim=1)
-            rule_scores_Ab = mlp_out[:, model.inducer.carg:]
-            rule_probs_Ab = F.log_softmax(rule_scores_Ab, dim=1)
-            printDebug("rule_mlp Aa probs")
-            printDebug(torch.exp(rule_probs_Aa))
-            printDebug("rule_mlp Ab probs")
-            printDebug(torch.exp(rule_probs_Ab))
+                logging.info("association probs")
+                logging.info(torch.exp(model.inducer.associations))
 
-            printDebug("combined G Aa probs")
-            printDebug(torch.exp(model.inducer.parser.log_G_Aa))
-            printDebug("combined G Ab probs")
-            printDebug(torch.exp(model.inducer.parser.log_G_Ab))
+                mlp_out = model.inducer.rule_mlp(model.inducer.par_cat_onehot)
+                rule_scores_Aa = mlp_out[:, :model.inducer.cgen]
+                rule_probs_Aa = F.log_softmax(rule_scores_Aa, dim=1)
+                rule_scores_Ab = mlp_out[:, model.inducer.cgen:]
+                rule_probs_Ab = F.log_softmax(rule_scores_Ab, dim=1)
+                logging.info("rule_mlp Aa probs")
+                logging.info(torch.exp(rule_probs_Aa))
+                logging.info("rule_mlp Ab probs")
+                logging.info(torch.exp(rule_probs_Ab))
 
-            word_dist = torch.exp(model.inducer.emit_prob_model.dist)
-            printDebug("word_dist shape")
-            printDebug(word_dist.shape)
-            printDebug("word_dist")
-            printDebug(word_dist)
+                logging.info("combined G Aa probs")
+                logging.info(torch.exp(model.inducer.parser.log_G_Aa))
+                logging.info("combined G Ab probs")
+                logging.info(torch.exp(model.inducer.parser.log_G_Ab))
+
+                word_dist = torch.exp(model.inducer.emit_prob_model.dist)
+                logging.info("word_dist shape")
+                logging.info(word_dist.shape)
+                logging.info("word_dist")
+                logging.info(word_dist)
+                logging.info("======== END GRAMMAR DUMP ========")
 
 
 

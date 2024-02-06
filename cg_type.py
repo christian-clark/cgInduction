@@ -71,7 +71,9 @@ def generate_categories_by_depth(
 ):
     OPERATORS = ["-a", "-b"]
     if max_arg_depth is None:
-        max_arg_depth = max_depth
+        # NOTE this previously set max_arg_depth to max_depth,
+        # which I think was wrong
+        max_arg_depth = max_depth - 1
     else:
         assert max_depth >= max_arg_depth
     # dictionary mapping integer i to set of cats of depth less than
@@ -98,15 +100,15 @@ def generate_categories_by_depth(
         cs_dleq[i+1] = cs_dleq[i].union(cs_deqiplus1)
 
     all_cats =  cs_dleq[max_depth]
-    # res_cats (result cats) are the categories that can be
-    # a result from a functor applying to its argument.
+    # par_cats (parent cats) are the categories that can be
+    # parent nodes in a binary-branching rule.
     # Since a functor's depth is one greater than the max depth between
-    # its argument and result, the max depth of a result
+    # its argument and result, the max depth of a parent
     # is max_depth-1
-    res_cats = cs_dleq[max_depth-1]
+    par_cats = cs_dleq[max_depth-1]
     # optionally constrain the complexity of argument categories
     arg_cats = cs_dleq[max_arg_depth]
-    return all_cats, res_cats, arg_cats
+    return all_cats, par_cats, arg_cats
 
 
 def category_from_string(string):
@@ -163,16 +165,16 @@ def read_categories_from_file(f):
             printDebug("warning: category {} is duplicated".format(cat))
         else:
             all_cats.add(cat)
-    res_cats = set()
+    par_cats = set()
     arg_cats = set()
     for cat in all_cats:
         if cat.is_primitive(): continue
         res, arg = cat.res_arg
         if not res in all_cats or not arg in all_cats:
             raise Exception("if category (res)(op)(arg) is in the list, res and arg must be in the list too")
-        res_cats.add(res)
+        par_cats.add(res)
         arg_cats.add(arg)
-    return all_cats, res_cats, arg_cats
+    return all_cats, par_cats, arg_cats
 
 # TODO change this to a method of CGNode
 def arg_depth(category):
