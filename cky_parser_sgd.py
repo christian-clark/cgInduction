@@ -23,8 +23,8 @@ def logsumexp_multiply(a, b):
 # for dense grammar only! ie D must be -1
 class BatchCKYParser:
     def __init__(
-        self, ix2cat, ix2pred, ix2predcat, ix2predcat_par, ix2predcat_gen, 
-        genpc_2_pc, lfunc_ixs, rfunc_ixs, larg_mask, rarg_mask, qall, qpar,
+        self, ix2cat, ix2pred, ix2predcat_all, ix2predcat_par, ix2predcat_gen, 
+        genpc_2_pc, limp_ixs, rimp_ixs, qall, qpar,
         qgen, device="cpu"
     ):
         # TODO figure out/document what D and K do
@@ -32,14 +32,12 @@ class BatchCKYParser:
         self.K = qpar
         self.ix2cat = ix2cat
         self.ix2pred = ix2pred
-        self.ix2predcat = ix2predcat
+        self.ix2predcat_all = ix2predcat_all
         self.ix2predcat_par = ix2predcat_par
         self.ix2predcat_gen = ix2predcat_gen
         self.genpc_2_pc = genpc_2_pc
-        self.lfunc_ixs = lfunc_ixs
-        self.rfunc_ixs = rfunc_ixs
-        self.larg_mask = larg_mask
-        self.rarg_mask = rarg_mask
+        self.limp_ixs = limp_ixs
+        self.rimp_ixs = rimp_ixs
         # total number of predcats, i.e. (predicate, category) pairs
         self.Qall = qall
         # total number of parent predcats
@@ -54,10 +52,10 @@ class BatchCKYParser:
 
 
     def set_models(
-            self, p0, expansion_Aa, expansion_Ab, split_scores
+            self, p0, expansion_lgen, expansion_rgen, split_scores
         ):
-        self.log_G_Aa = expansion_Aa
-        self.log_G_Ab = expansion_Ab
+        self.log_G_lgen = expansion_lgen
+        self.log_G_rgen = expansion_rgen
         self.log_p0 = p0
         self.split_scores = split_scores
 
@@ -133,7 +131,7 @@ class BatchCKYParser:
             
             # indices for predcats that can be arguments
             gen_ixs = torch.tensor(
-                [self.ix2predcat.inv[pc] for pc in self.ix2predcat_gen.values()]
+                [self.ix2predcat_all.inv[pc] for pc in self.ix2predcat_gen.values()]
             ).to(self.device)
             # dim: height x imax x batch_size x Qgen
             gen_ixs = gen_ixs.repeat(
@@ -168,39 +166,41 @@ class BatchCKYParser:
             # probability that parent category i branches into left argument j
             # and right functor i-aj
             # dim: imax x batch_size x Qpar x Qgen
-            scores_larg = self.log_G_Aa.to(self.device).repeat(
+            scores_larg = self.log_G_lgen.to(self.device).repeat(
                 imax, batch_size, 1, 1
             )
             # probability that parent category i branches into left functor i-bj
             # and right argument j
             # dim:  imax x batch_size x Qpar x Qgen
-            scores_rarg = self.log_G_Ab.to(self.device).repeat(
+            scores_rarg = self.log_G_rgen.to(self.device).repeat(
                 imax, batch_size, 1, 1
             )
 
             # dim: imax x batch_size x Qpar x Qgen
-            rfunc_ixs = self.rfunc_ixs.repeat(imax, batch_size, 1, 1)
+            rimp_ixs = self.rimp_ixs.repeat(imax, batch_size, 1, 1)
 
             # dim: imax x batch_size x Qpar x Qgen
-            lfunc_ixs = self.lfunc_ixs.repeat(imax, batch_size, 1, 1)
+            limp_ixs = self.limp_ixs.repeat(imax, batch_size, 1, 1)
 
             # rearrange children_score_lgen to index by parent
             # and argument rather than functor and argument
             # dim: height x imax x batch_size x Qpar x Qgen
             children_score_larg = torch.gather(
-                children_score_lgen, dim=2, index=rfunc_ixs
+                children_score_lgen, dim=2, index=rimp_ixs
             )
             # block impossible parent-argument combinations
-            children_score_larg += self.larg_mask
+            # NOTE this was moved to cg_inducer.forward
+            #children_score_larg += self.lgen_mask
 
             # rearrange children_score_rgen to index by parent
             # and argument rather than functor and argument
             # dim: height x imax x batch_size x Qpar x Qgen
             children_score_rarg = torch.gather(
-                children_score_rgen, dim=2, index=lfunc_ixs
+                children_score_rgen, dim=2, index=limp_ixs
             )
             # block impossible parent-argument combinations
-            children_score_rarg += self.rarg_mask
+            # NOTE this was moved to cg_inducer.forward
+            #children_score_rarg += self.rgen_mask
 
             # TODO can this be done more space-efficiently?
             # dim: imax x batch_size x Qpar x Qgen
@@ -226,7 +226,7 @@ class BatchCKYParser:
 
             # indices for predcats that can be parents
             par_ixs = torch.tensor(
-                [self.ix2predcat.inv[pc] for pc in self.ix2predcat_par.values()]
+                [self.ix2predcat_all.inv[pc] for pc in self.ix2predcat_par.values()]
             ).to(self.device)
             # dim: imax x batch_size x Qpar
             par_ixs = par_ixs.repeat(
@@ -294,7 +294,7 @@ class BatchCKYParser:
 
             # indices for predcats that can be arguments
             gen_ixs = torch.tensor(
-                [self.ix2predcat.inv[pc] for pc in self.ix2predcat_gen.values()]
+                [self.ix2predcat_all.inv[pc] for pc in self.ix2predcat_gen.values()]
             ).to(self.device)
             # dim: height x imax x batch_size x Qgen
             gen_ixs = gen_ixs.repeat(
@@ -319,39 +319,39 @@ class BatchCKYParser:
             # probability that parent category i branches into left argument j
             # and right functor i-aj
             # dim: height x imax x batch_size x Qpar x Qgen
-            scores_larg = self.log_G_Aa.to(self.device).repeat(
+            scores_larg = self.log_G_lgen.to(self.device).repeat(
                 height, imax, batch_size, 1, 1
             )
             # probability that parent category i branches into left functor i-bj
             # and right argument j
             # dim: height x imax x batch_size x Qpar x Qgen
-            scores_rarg = self.log_G_Ab.to(self.device).repeat(
+            scores_rarg = self.log_G_rgen.to(self.device).repeat(
                 height, imax, batch_size, 1, 1
             )
 
             # dim: height x imax x batch_size x Qpar x Qgen
-            rfunc_ixs = self.rfunc_ixs.repeat(height, imax, batch_size, 1, 1)
+            rimp_ixs = self.rimp_ixs.repeat(height, imax, batch_size, 1, 1)
 
             # dim: height x imax x batch_size x Qpar x Qgen
-            lfunc_ixs = self.lfunc_ixs.repeat(height, imax, batch_size, 1, 1)
+            limp_ixs = self.limp_ixs.repeat(height, imax, batch_size, 1, 1)
 
             # rearrange children_score_lgen to index by parent
             # and argument rather than functor and argument
             # dim: height x imax x batch_size x Qpar x Qgen
             children_score_larg = torch.gather(
-                children_score_lgen, dim=3, index=rfunc_ixs
+                children_score_lgen, dim=3, index=rimp_ixs
             )
             # block impossible parent-argument combinations
-            children_score_larg += self.larg_mask
+            #children_score_larg += self.lgen_mask
 
             # rearrange children_score_rgen to index by parent
             # and argument rather than functor and argument
             # dim: height x imax x batch_size x Qpar x Qgen
             children_score_rarg = torch.gather(
-                children_score_rgen, dim=3, index=lfunc_ixs
+                children_score_rgen, dim=3, index=limp_ixs
             )
             # block impossible parent-argument combinations
-            children_score_rarg += self.rarg_mask
+            #children_score_rarg += self.rgen_mask
 
             # probability that parent category i branches into left argument j
             # and right functor i-aj, that category j spans the words on the
@@ -392,14 +392,14 @@ class BatchCKYParser:
             l_bs_reshape = l_bs.view(imax, batch_size, self.Qpar, 1)
 
             # dim: imax x batch_size x Qpar
-            rfunc_ixs = rfunc_ixs[0]
-            l_cs = torch.gather(rfunc_ixs, index=l_bs_reshape, dim=3).squeeze(dim=3)
+            rimp_ixs = rimp_ixs[0]
+            l_cs = torch.gather(rimp_ixs, index=l_bs_reshape, dim=3).squeeze(dim=3)
 
             # dim: imax x batch_size x Qgen
             pc_ix = self.genpc_2_pc.repeat(imax, batch_size, 1)
 
             # dim: imax x batch_size x Qpar
-            # now each entry is an index for ix2predcat instead of
+            # now each entry is an index for ix2predcat_all instead of
             # ix2predcat_gen. This is necessary for so that l_cs and l_bs
             # use the same indexing for viterbi_backtrack
             l_bs_reindexed = torch.gather(pc_ix, dim=-1, index=l_bs)
@@ -417,8 +417,8 @@ class BatchCKYParser:
             r_cs_reshape = r_cs.view(imax, batch_size, self.Qpar, 1)
 
             # dim: imax x batch_size x Qres
-            lfunc_ixs = lfunc_ixs[0]
-            r_bs = torch.gather(lfunc_ixs, index=r_cs_reshape, dim=3).squeeze(dim=3)
+            limp_ixs = limp_ixs[0]
+            r_bs = torch.gather(limp_ixs, index=r_cs_reshape, dim=3).squeeze(dim=3)
             # dim: imax x batch_size x Qpar
             r_cs_reindexed = torch.gather(pc_ix, dim=-1, index=r_cs)
 
@@ -442,7 +442,7 @@ class BatchCKYParser:
             ).to(self.device)
             # indices for predcats that can be parents
             par_ixs = torch.tensor(
-                [self.ix2predcat.inv[pc] for pc in self.ix2predcat_par.values()]
+                [self.ix2predcat_all.inv[pc] for pc in self.ix2predcat_par.values()]
             ).to(self.device)
             # dim: imax x batch_size x Qpar
             par_ixs = par_ixs.repeat(
@@ -484,7 +484,7 @@ class BatchCKYParser:
         assert self.this_sent_len > 0, "must call inside pass first!"
 
         a = top_a[sent_index].item()
-        a_pred, a_cat = self.ix2predcat[a]
+        a_pred, a_cat = self.ix2predcat_all[a]
         #A_cat_str = str(self.ix2cat[A_cat])
         a_str = "{}:{}".format(self.ix2cat[a_cat], self.ix2pred[a_pred])
 
@@ -506,11 +506,11 @@ class BatchCKYParser:
             ij_diff = working_node.j - working_node.i - 1
             # TODO rename .cat to .predcat
             pc_ix = working_node.cat
-            pc_par_ix = self.ix2predcat_par.inv[self.ix2predcat[pc_ix]]
+            pc_par_ix = self.ix2predcat_par.inv[self.ix2predcat_all[pc_ix]]
             k_b_c = backtrack_chart[ij_diff][ working_node.i, sent_index, pc_par_ix]
             split_point, b, c = k_b_c[0].item(), k_b_c[1].item(), k_b_c[2].item()
-            b_pred, b_cat = self.ix2predcat[b]
-            c_pred, c_cat = self.ix2predcat[c]
+            b_pred, b_cat = self.ix2predcat_all[b]
+            c_pred, c_cat = self.ix2predcat_all[c]
             b_str = "{}:{}".format(self.ix2cat[b_cat], self.ix2pred[b_pred])
             c_str = "{}:{}".format(self.ix2cat[c_cat], self.ix2pred[c_pred])
 

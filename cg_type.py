@@ -1,7 +1,7 @@
 from itertools import product as prod
 
 
-DEBUG = False
+DEBUG = True
 def printDebug(*args, **kwargs):
     if DEBUG:
         print("DEBUG: ", end="")
@@ -23,6 +23,24 @@ class CGNode:
 
     def is_primitive(self):
         return self.res_arg is None
+
+    def is_modifier(self):
+        # u-av categories can be modifiers
+        if self.is_primitive(): return False
+        res, arg = self.res_arg
+        return self.val == "-a" \
+            and res.is_primitive() \
+            and arg.is_primitive()
+
+    def arg_depth(self):
+        return CGNode._get_arg_depth(self)
+
+    @staticmethod
+    def _get_arg_depth(node):
+        if node.is_primitive():
+            return 0
+        else:
+            return 1 + CGNode._get_arg_depth(node.res_arg[0])
 
     def __str__(self):
         stack, out = list(), list()
@@ -65,10 +83,13 @@ class CGNode:
         return str(self) < str(other)
 
 
-
+# TODO update this to support modification.
+# current code just makes categories for argument attachement a la
+# ACL 2023 Findings paper
 def generate_categories_by_depth(
     num_primitives, max_depth, max_arg_depth=None
 ):
+    raise NotImplementedError("Generating categories by depth is not currently implemented")
     OPERATORS = ["-a", "-b"]
     if max_arg_depth is None:
         # NOTE this previously set max_arg_depth to max_depth,
@@ -163,39 +184,78 @@ def read_categories_from_file(f):
         cat = category_from_string(l.strip())
         if cat in all_cats:
             printDebug("warning: category {} is duplicated".format(cat))
+        elif cat.arg_depth() > 2:
+            raise Exception("Inducer does not currently support categories that take more than 2 arguments")
         else:
             all_cats.add(cat)
-    par_cats = set()
+    # categories that can be results from argument attachemnt
+    res_cats = set()
+    # categories that can be arguments to argument attachment
     arg_cats = set()
+    # primitive categories
+    prim_cats = set()
+    # categories that can be modifiers (must be u-av, where u and v
+    # are primitives)
+    mod_cats = set()
     for cat in all_cats:
-        if cat.is_primitive(): continue
+        if cat.is_primitive():
+            prim_cats.add(cat)
+            continue
+        if cat.is_modifier():
+            mod_cats.add(cat)
         res, arg = cat.res_arg
-        if not res in all_cats or not arg in all_cats:
-            raise Exception("if category (res)(op)(arg) is in the list, res and arg must be in the list too")
-        par_cats.add(res)
-        arg_cats.add(arg)
-    return all_cats, par_cats, arg_cats
-
-# TODO change this to a method of CGNode
-def arg_depth(category):
-    """Return the number of arguments a syntactic category needs to result
-    in a primitive. Modificands (e.g. combining with 0/0) are not treated as
-    arguments."""
-    if category.is_primitive():
-        return 0
-    else:
-        res, arg = category.res_arg
-        # TODO this deals with modifiers, so that e.g. 0/0 will still have
-        # depth 0. Once the inducer includes a separate operation for
-        # modification, this special case should probably be removed
-        if res == arg:
-            return arg_depth(res)
+        if res in all_cats and arg in all_cats:
+            res_cats.add(res)
+            arg_cats.add(arg)
+        # NOTE: hypothetically you could allow a category u-av to be included
+        # even if u and v weren't in all_cats, since u-av can be a modifier.
+        # But this complicates the logic enough in cg_inducer that I'm not
+        # doing it
         else:
-            return 1 + arg_depth(res)
+            raise Exception("if category (res)(op)(arg) is in the list, and it can't be a modifier category, res and arg must be in the list too.")
+    # categories that can be parents of a binary-branching rule
+    par_cats = set()
+    # types of categories that can be parents:
+    # * u-av cats (modifiers can be modified)
+    par_cats.update(mod_cats)
+    # * primitive cats (can be modified)
+    par_cats.update(prim_cats)
+    # * arg cats (can be modified)
+    par_cats.update(arg_cats)
+    # * res cats (can undergo argument attachment)
+    par_cats.update(res_cats)
+
+    # categories that can be generated children from a binary-branching rule
+    gen_cats = set()
+    # types of categories that can be generated children:
+    # * u-av cats (modifiers)
+    gen_cats.update(mod_cats)
+    # * arg cats
+    gen_cats.update(arg_cats)
+
+    return all_cats, par_cats, gen_cats, arg_cats, res_cats
 
 
-def get_category_argument_depths(ix2cat):
-    ix2argdepth = dict()
-    for i, cat in ix2cat.items():
-        ix2argdepth[i] = arg_depth(cat)
-    return ix2argdepth
+# replaced by CGNode.arg_depth
+#def arg_depth(category):
+#    """Return the number of arguments a syntactic category needs to result
+#    in a primitive. Modificands (e.g. combining with 0/0) are not treated as
+#    arguments."""
+#    if category.is_primitive():
+#        return 0
+#    else:
+#        res, arg = category.res_arg
+#        # TODO this deals with modifiers, so that e.g. 0/0 will still have
+#        # depth 0. Once the inducer includes a separate operation for
+#        # modification, this special case should probably be removed
+#        if res == arg:
+#            return arg_depth(res)
+#        else:
+#            return 1 + arg_depth(res)
+#
+#
+#def get_category_argument_depths(ix2cat):
+#    ix2argdepth = dict()
+#    for i, cat in ix2cat.items():
+#        ix2argdepth[i] = arg_depth(cat)
+#    return ix2argdepth
