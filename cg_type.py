@@ -83,13 +83,9 @@ class CGNode:
         return str(self) < str(other)
 
 
-# TODO update this to support modification.
-# current code just makes categories for argument attachement a la
-# ACL 2023 Findings paper
 def generate_categories_by_depth(
     num_primitives, max_depth, max_arg_depth=None
 ):
-    raise NotImplementedError("Generating categories by depth is not currently implemented")
     OPERATORS = ["-a", "-b"]
     if max_arg_depth is None:
         # NOTE this previously set max_arg_depth to max_depth,
@@ -103,6 +99,9 @@ def generate_categories_by_depth(
     cs_dleq[-1] = {}
     cs_dleq[0] = {CGNode(str(p)) for p in range(num_primitives)}
 
+    # categories that can be modifiers (must be u-av, where u and v
+    # are primitives)
+    mod_cats = set()
     for i in range(max_depth):
         cs_dleqi = cs_dleq[i]
         # constrain argument cat to have depth no greater than max_arg_depth
@@ -117,19 +116,36 @@ def generate_categories_by_depth(
         # be i+1
         for res, arg in children_i - children_iminus1:
             for o in OPERATORS:
-                cs_deqiplus1.add(CGNode(o, res, arg))
+                new_cat = CGNode(o, res, arg)
+                cs_deqiplus1.add(new_cat)
+                if new_cat.is_modifier():
+                    mod_cats.add(new_cat)
         cs_dleq[i+1] = cs_dleq[i].union(cs_deqiplus1)
 
     all_cats =  cs_dleq[max_depth]
-    # par_cats (parent cats) are the categories that can be
-    # parent nodes in a binary-branching rule.
-    # Since a functor's depth is one greater than the max depth between
-    # its argument and result, the max depth of a parent
-    # is max_depth-1
-    par_cats = cs_dleq[max_depth-1]
+    # categories that can be results from argument attachemnt
+    res_cats = cs_dleq[max_depth-1]
+    # categories that can be arguments to argument attachment
     # optionally constrain the complexity of argument categories
     arg_cats = cs_dleq[max_arg_depth]
-    return all_cats, par_cats, arg_cats
+
+    # categories that can be parents of a binary-branching rule
+    par_cats = set()
+    # types of categories that can be parents:
+    # * u-av cats (modifiers can be modified)
+    par_cats.update(mod_cats)
+    # * res cats (can undergo argument attachment). A subset of these
+    # can also be arguments and be modified
+    par_cats.update(res_cats)
+
+    # categories that can be generated children from a binary-branching rule
+    gen_cats = set()
+    # types of categories that can be generated children:
+    # * u-av cats (modifiers)
+    gen_cats.update(mod_cats)
+    # * arg cats
+    gen_cats.update(arg_cats)
+    return all_cats, par_cats, gen_cats, arg_cats, res_cats
 
 
 def category_from_string(string):

@@ -121,11 +121,12 @@ class BasicCGInducer(nn.Module):
         if self.num_primitives is not None:
             assert self.max_func_depth is not None
             assert self.cats_list is None
-            all_cats, par_cats, gen_cats = generate_categories_by_depth(
-                self.num_primitives,
-                self.max_func_depth,
-                self.max_arg_depth
-            )
+            all_cats, par_cats, gen_cats, arg_cats, res_cats = \
+                generate_categories_by_depth(
+                    self.num_primitives,
+                    self.max_func_depth,
+                    self.max_arg_depth
+                )
 
         # option 2: specify a file with a list of categories
         else:
@@ -497,7 +498,7 @@ class BasicCGInducer(nn.Module):
 
             scores = torch.log_softmax(assoc_row, dim=0)
             associations[ix_par] = scores
-        self.associations = associations
+        self.associations = associations.to(self.device)
 
 
 #        self.arg_associations = arg_associations
