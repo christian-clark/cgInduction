@@ -6,7 +6,7 @@ import numpy as np
 
 QUASI_INF = 10000000.
 
-DEBUG = True
+DEBUG = False
 def printDebug(*args, **kwargs):
     if DEBUG:
         print("DEBUG: ", end="")

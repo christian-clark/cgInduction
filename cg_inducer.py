@@ -10,7 +10,7 @@ from cg_type import CGNode, generate_categories_by_depth, \
 
 QUASI_INF = 10000000.
 
-DEBUG = True
+DEBUG = False
 def printDebug(*args, **kwargs):
     if DEBUG:
         print("DEBUG: ", end="")
@@ -593,12 +593,14 @@ class BasicCGInducer(nn.Module):
         ).to(self.device)
 
         for par in self.par_cats:
-            par_ix = self.ix2cat_all.inverse[par]
+            par_ix = self.ix2cat_par.inverse[par]
             for gen in self.gen_cats:
-                # modifiers can combine with anything
-                if gen.is_modifier():
+                # modifiers can combine with other modifiers or with
+                # primitive categories
+                if (par.is_primitive() or par.is_modifier()) \
+                    and gen.is_modifier():
                     continue
-                gen_ix = self.ix2cat_all.inverse[gen]
+                gen_ix = self.ix2cat_gen.inverse[gen]
                 # TODO don't hard-code operator
                 lfunc = CGNode("-b", par, gen)
                 if lfunc not in self.all_cats:
