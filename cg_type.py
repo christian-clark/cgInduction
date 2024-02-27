@@ -250,28 +250,3 @@ def read_categories_from_file(f):
     gen_cats.update(arg_cats)
 
     return all_cats, par_cats, gen_cats, arg_cats, res_cats
-
-
-# replaced by CGNode.arg_depth
-#def arg_depth(category):
-#    """Return the number of arguments a syntactic category needs to result
-#    in a primitive. Modificands (e.g. combining with 0/0) are not treated as
-#    arguments."""
-#    if category.is_primitive():
-#        return 0
-#    else:
-#        res, arg = category.res_arg
-#        # TODO this deals with modifiers, so that e.g. 0/0 will still have
-#        # depth 0. Once the inducer includes a separate operation for
-#        # modification, this special case should probably be removed
-#        if res == arg:
-#            return arg_depth(res)
-#        else:
-#            return 1 + arg_depth(res)
-#
-#
-#def get_category_argument_depths(ix2cat):
-#    ix2argdepth = dict()
-#    for i, cat in ix2cat.items():
-#        ix2argdepth[i] = arg_depth(cat)
-#    return ix2argdepth
