@@ -129,14 +129,14 @@ def generate_categories_by_depth(
     # optionally constrain the complexity of argument categories
     arg_cats = cs_dleq[max_arg_depth]
 
-    # categories that can be parents of a binary-branching rule
-    par_cats = set()
-    # types of categories that can be parents:
-    # * u-av cats (modifiers can be modified)
-    par_cats.update(mod_cats)
-    # * res cats (can undergo argument attachment). A subset of these
-    # can also be arguments and be modified
-    par_cats.update(res_cats)
+#    # categories that can be parents of a binary-branching rule
+#    par_cats = set()
+#    # types of categories that can be parents:
+#    # * u-av cats (modifiers can be modified)
+#    par_cats.update(mod_cats)
+#    # * res cats (can undergo argument attachment). A subset of these
+#    # can also be arguments and be modified
+#    par_cats.update(res_cats)
 
     # categories that can be generated children from a binary-branching rule
     gen_cats = set()
@@ -145,7 +145,7 @@ def generate_categories_by_depth(
     gen_cats.update(mod_cats)
     # * arg cats
     gen_cats.update(arg_cats)
-    return all_cats, par_cats, gen_cats, arg_cats, res_cats
+    return all_cats, gen_cats, arg_cats, res_cats
 
 
 def category_from_string(string):
@@ -229,18 +229,18 @@ def read_categories_from_file(f):
         # doing it
         else:
             raise Exception("if category (res)(op)(arg) is in the list, and it can't be a modifier category, res and arg must be in the list too.")
-    # categories that can be parents of a binary-branching rule
-    par_cats = set()
-    # types of categories that can be parents:
-    # * u-av cats (modifiers can be modified)
-    par_cats.update(mod_cats)
-    # * primitive cats (can be modified)
-    par_cats.update(prim_cats)
-    # * arg cats (can be modified)
-    par_cats.update(arg_cats)
-    # * res cats (can undergo argument attachment)
-    par_cats.update(res_cats)
-
+#    # categories that can be parents of a binary-branching rule
+#    par_cats = set()
+#    # types of categories that can be parents:
+#    # * u-av cats (modifiers can be modified)
+#    par_cats.update(mod_cats)
+#    # * primitive cats (can be modified)
+#    par_cats.update(prim_cats)
+#    # * arg cats (can be modified)
+#    par_cats.update(arg_cats)
+#    # * res cats (can undergo argument attachment)
+#    par_cats.update(res_cats)
+#
     # categories that can be generated children from a binary-branching rule
     gen_cats = set()
     # types of categories that can be generated children:
@@ -249,4 +249,4 @@ def read_categories_from_file(f):
     # * arg cats
     gen_cats.update(arg_cats)
 
-    return all_cats, par_cats, gen_cats, arg_cats, res_cats
+    return all_cats, gen_cats, arg_cats, res_cats

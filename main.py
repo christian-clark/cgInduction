@@ -205,8 +205,8 @@ def setup(eval_only=False):
     else:
         valid = None
 
-    logging.info('word lexicon:')
-    logging.info(word_lexicon)
+    #logging.info('word lexicon:')
+    #logging.info(word_lexicon)
     logging.info('vocab size: {0}'.format(len(word_lexicon)))
 
     parser = BasicCGInducer(
@@ -223,10 +223,7 @@ def setup(eval_only=False):
         "Number of genchild categories: {}".format(len(parser.gen_cats))
     )
     logging.info(
-        "Number of parent categories: {}".format(len(parser.par_cats))
-    )
-    logging.info(
-        "Examples of categories: {}".format(list(parser.ix2cat_all.values())[:100])
+        "Examples of categories: {}".format(list(parser.ix2cat.values())[:100])
     )
     logging.info(
         "Total number of predicates: {}".format(len(parser.ix2pred))
@@ -327,9 +324,7 @@ def train():
                 #torch.set_printoptions(precision=2, linewidth=120)
                 torch.set_printoptions(sci_mode=False, precision=2, linewidth=300)
                 #logging.info("cat_arg_depths: {}".format(model.inducer.cat_arg_depths))
-                logging.info("arg_depth_to_cats_par: {}".format(model.inducer.arg_depth_to_cats_par))
-                logging.info("arg_depth_to_cats_gen: {}".format(model.inducer.arg_depth_to_cats_gen))
-                logging.info("ix2cat_all: {}".format(model.inducer.ix2cat_all))
+                logging.info("ix2cat: {}".format(model.inducer.ix2cat))
                 logging.info("par_cats: {}".format(model.inducer.par_cats))
                 logging.info("gen_cats: {}".format(model.inducer.gen_cats))
                 logging.info("ix2pred: {}".format(model.inducer.ix2pred))

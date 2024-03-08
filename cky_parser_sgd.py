@@ -23,25 +23,21 @@ def logsumexp_multiply(a, b):
 # for dense grammar only! ie D must be -1
 class BatchCKYParser:
     def __init__(
-        self, ix2cat, ix2pred, ix2predcat_all, ix2predcat_par, ix2predcat_gen, 
-        genpc_2_pc, limp_ixs, rimp_ixs, qall, qpar,
-        qgen, device="cpu"
+        self, ix2cat, ix2pred, ix2predcat, ix2predcat_gen, 
+        genpc_2_pc, lfunc_ixs, rfunc_ixs, qall, qgen, device="cpu"
     ):
         # TODO figure out/document what D and K do
         self.D = -1
-        self.K = qpar
+        self.K = qall
         self.ix2cat = ix2cat
         self.ix2pred = ix2pred
-        self.ix2predcat_all = ix2predcat_all
-        self.ix2predcat_par = ix2predcat_par
+        self.ix2predcat = ix2predcat
         self.ix2predcat_gen = ix2predcat_gen
         self.genpc_2_pc = genpc_2_pc
-        self.limp_ixs = limp_ixs
-        self.rimp_ixs = rimp_ixs
+        self.lfunc_ixs = lfunc_ixs
+        self.rfunc_ixs = rfunc_ixs
         # total number of predcats, i.e. (predicate, category) pairs
         self.Qall = qall
-        # total number of parent predcats
-        self.Qpar = qpar
         # total number of argument predcats
         self.Qgen = qgen
         self.this_sent_len = -1
@@ -52,10 +48,9 @@ class BatchCKYParser:
 
 
     def set_models(
-            self, p0, expansion_lgen, expansion_rgen, split_scores
+            self, p0, expansion, split_scores
         ):
-        self.log_G_lgen = expansion_lgen
-        self.log_G_rgen = expansion_rgen
+        self.log_G = expansion
         self.log_p0 = p0
         self.split_scores = split_scores
 
@@ -79,8 +74,6 @@ class BatchCKYParser:
                 # compute_inside_marginal() doesn't produce a backtrack chart
                 if backtrack_chart is None:
                     left_chart, backtrack_chart = self.compute_inside_bestparse(sents)
-                printDebug("left chart used for viterbi backtracking")
-                printDebug(left_chart)
                 for sent_index, sent in enumerate(sents):
                     this_vnodes = self.viterbi_backtrack(left_chart, backtrack_chart, sent_index)
                     printDebug("this_vnodes", this_vnodes)
@@ -129,9 +122,9 @@ class BatchCKYParser:
             # dim: height x imax x batch_size x Qall
             c = torch.flip(right_chart[0:height, jmin:jmax], dims=[0])
             
-            # indices for predcats that can be arguments
+            # indices for predcats that can be generated children
             gen_ixs = torch.tensor(
-                [self.ix2predcat_all.inv[pc] for pc in self.ix2predcat_gen.values()]
+                [self.ix2predcat.inv[pc] for pc in self.ix2predcat_gen.values()]
             ).to(self.device)
             # dim: height x imax x batch_size x Qgen
             gen_ixs = gen_ixs.repeat(
@@ -165,28 +158,53 @@ class BatchCKYParser:
 
             # probability that parent category i branches into left argument j
             # and right functor i-aj
-            # dim: imax x batch_size x Qpar x Qgen
-            scores_larg = self.log_G_lgen.to(self.device).repeat(
+            # dim: imax x batch_size x Qall x Qgen
+            scores_Aa = self.log_G[..., 0].to(self.device).repeat(
                 imax, batch_size, 1, 1
             )
             # probability that parent category i branches into left functor i-bj
             # and right argument j
-            # dim:  imax x batch_size x Qpar x Qgen
-            scores_rarg = self.log_G_rgen.to(self.device).repeat(
+            # dim:  imax x batch_size x Qall x Qgen
+            scores_Ab = self.log_G[..., 1].to(self.device).repeat(
+                imax, batch_size, 1, 1
+            )
+            # probability that parent category i branches into left modifier j
+            # and right modificand i
+            # dim: imax x batch_size x Qall x Qgen
+            scores_Ma = self.log_G[..., 2].to(self.device).repeat(
+                imax, batch_size, 1, 1
+            )
+            # probability that parent category i branches into left 
+            # modificand i and right modifier j
+            # dim:  imax x batch_size x Qall x Qgen
+            scores_Mb = self.log_G[..., 3].to(self.device).repeat(
                 imax, batch_size, 1, 1
             )
 
-            # dim: imax x batch_size x Qpar x Qgen
-            rimp_ixs = self.rimp_ixs.repeat(imax, batch_size, 1, 1)
+#            # probability that parent category i branches into left argument j
+#            # and right functor i-aj
+#            # dim: imax x batch_size x Qall x Qgen
+#            scores_larg = self.log_G_lgen.to(self.device).repeat(
+#                imax, batch_size, 1, 1
+#            )
+#            # probability that parent category i branches into left functor i-bj
+#            # and right argument j
+#            # dim:  imax x batch_size x Qall x Qgen
+#            scores_rarg = self.log_G_rgen.to(self.device).repeat(
+#                imax, batch_size, 1, 1
+#            )
 
-            # dim: imax x batch_size x Qpar x Qgen
-            limp_ixs = self.limp_ixs.repeat(imax, batch_size, 1, 1)
+            # dim: imax x batch_size x Qall x Qgen
+            rfunc_ixs = self.rfunc_ixs.repeat(imax, batch_size, 1, 1)
+
+            # dim: imax x batch_size x Qall x Qgen
+            lfunc_ixs = self.lfunc_ixs.repeat(imax, batch_size, 1, 1)
 
             # rearrange children_score_lgen to index by parent
             # and argument rather than functor and argument
-            # dim: height x imax x batch_size x Qpar x Qgen
-            children_score_larg = torch.gather(
-                children_score_lgen, dim=2, index=rimp_ixs
+            # dim: height x imax x batch_size x Qall x Qgen
+            children_score_Aa = torch.gather(
+                children_score_lgen, dim=2, index=rfunc_ixs
             )
             # block impossible parent-argument combinations
             # NOTE this was moved to cg_inducer.forward
@@ -194,27 +212,29 @@ class BatchCKYParser:
 
             # rearrange children_score_rgen to index by parent
             # and argument rather than functor and argument
-            # dim: height x imax x batch_size x Qpar x Qgen
-            children_score_rarg = torch.gather(
-                children_score_rgen, dim=2, index=limp_ixs
+            # dim: height x imax x batch_size x Qall x Qgen
+            children_score_Ab = torch.gather(
+                children_score_rgen, dim=2, index=lfunc_ixs
             )
-            # block impossible parent-argument combinations
-            # NOTE this was moved to cg_inducer.forward
-            #children_score_rarg += self.rgen_mask
 
             # TODO can this be done more space-efficiently?
-            # dim: imax x batch_size x Qpar x Qgen
-            y_larg = scores_larg + children_score_larg
-            y_rarg = scores_rarg + children_score_rarg
+            # dim: imax x batch_size x Qall x Qgen
+            y_Aa = scores_Aa + children_score_Aa
+            y_Ab = scores_Ab + children_score_Ab
+            # NOTE: because the implicit child and parent have the same
+            # predcat for modifier attachment, there's no need to define
+            # children_score_Ma and children_score_Mb
+            y_Ma = scores_Ma + children_score_lgen
+            y_Mb = scores_Mb + children_score_rgen
 
             # combine left and right arg probabilities
-            # dim: imax x batch_size x Qpar x Qgen
-            y1 = torch.logsumexp(torch.stack([y_larg, y_rarg]), dim=0)
+            # dim: imax x batch_size x Qall x Qgen
+            y1 = torch.logsumexp(torch.stack([y_Aa, y_Ab, y_Ma, y_Mb]), dim=0)
             # marginalize over gen categories
-            # dim: imax x batch_size x Qpar
+            # dim: imax x batch_size x Qall
             y1 = torch.logsumexp(y1, dim=3)
 
-            # before this, y1 just contains probabilities for the Qpar
+            # before this, y1 just contains probabilities for the Qall
             # parent categories.
             # But left_chart and right_chart maintain all Qall
             # categories, so pad y1 to get it up to that size
@@ -226,9 +246,9 @@ class BatchCKYParser:
 
             # indices for predcats that can be parents
             par_ixs = torch.tensor(
-                [self.ix2predcat_all.inv[pc] for pc in self.ix2predcat_par.values()]
+                [self.ix2predcat.inv[pc] for pc in self.ix2predcat.values()]
             ).to(self.device)
-            # dim: imax x batch_size x Qpar
+            # dim: imax x batch_size x Qall
             par_ixs = par_ixs.repeat(
                 imax, batch_size, 1
             )
@@ -274,7 +294,7 @@ class BatchCKYParser:
         # (split point, left child, right child) for parent category a
         # spanning words i...(i+ijdiff) in sentence s
         backtrack_chart = torch.zeros(
-            sent_len, sent_len, batch_size, self.Qpar, 3
+            sent_len, sent_len, batch_size, self.Qall, 3
         ).int().to(self.device)
         self.set_lexical_prob(sents, left_chart)
         right_chart[0] = left_chart[0]
@@ -294,7 +314,7 @@ class BatchCKYParser:
 
             # indices for predcats that can be arguments
             gen_ixs = torch.tensor(
-                [self.ix2predcat_all.inv[pc] for pc in self.ix2predcat_gen.values()]
+                [self.ix2predcat.inv[pc] for pc in self.ix2predcat_gen.values()]
             ).to(self.device)
             # dim: height x imax x batch_size x Qgen
             gen_ixs = gen_ixs.repeat(
@@ -318,123 +338,232 @@ class BatchCKYParser:
 
             # probability that parent category i branches into left argument j
             # and right functor i-aj
-            # dim: height x imax x batch_size x Qpar x Qgen
-            scores_larg = self.log_G_lgen.to(self.device).repeat(
+            # dim: height x imax x batch_size x Qall x Qgen
+            scores_Aa = self.log_G[..., 0].to(self.device).repeat(
                 height, imax, batch_size, 1, 1
             )
             # probability that parent category i branches into left functor i-bj
             # and right argument j
-            # dim: height x imax x batch_size x Qpar x Qgen
-            scores_rarg = self.log_G_rgen.to(self.device).repeat(
+            # dim: height x imax x batch_size x Qall x Qgen
+            scores_Ab = self.log_G[..., 1].to(self.device).repeat(
+                height, imax, batch_size, 1, 1
+            )
+            # probability that parent category i branches into left modifier j
+            # and right modificand i
+            # dim: imax x batch_size x Qall x Qgen
+            scores_Ma = self.log_G[..., 2].to(self.device).repeat(
+                height, imax, batch_size, 1, 1
+            )
+            # probability that parent category i branches into left 
+            # modificand i and right modifier j
+            # dim:  imax x batch_size x Qall x Qgen
+            scores_Mb = self.log_G[..., 3].to(self.device).repeat(
                 height, imax, batch_size, 1, 1
             )
 
-            # dim: height x imax x batch_size x Qpar x Qgen
-            rimp_ixs = self.rimp_ixs.repeat(height, imax, batch_size, 1, 1)
+            printDebug("scores_Aa:", torch.exp(self.log_G[..., 0]))
+            printDebug("scores_Ab:", torch.exp(self.log_G[..., 1]))
+            printDebug("scores_Ma:", torch.exp(self.log_G[..., 2]))
+            printDebug("scores_Mb:", torch.exp(self.log_G[..., 3]))
 
-            # dim: height x imax x batch_size x Qpar x Qgen
-            limp_ixs = self.limp_ixs.repeat(height, imax, batch_size, 1, 1)
+            # dim: height x imax x batch_size x Qall x Qgen
+            rfunc_ixs = self.rfunc_ixs.repeat(height, imax, batch_size, 1, 1)
+
+            # dim: height x imax x batch_size x Qall x Qgen
+            lfunc_ixs = self.lfunc_ixs.repeat(height, imax, batch_size, 1, 1)
 
             # rearrange children_score_lgen to index by parent
             # and argument rather than functor and argument
-            # dim: height x imax x batch_size x Qpar x Qgen
-            children_score_larg = torch.gather(
-                children_score_lgen, dim=3, index=rimp_ixs
+            # dim: height x imax x batch_size x Qall x Qgen
+            children_score_Aa = torch.gather(
+                children_score_lgen, dim=3, index=rfunc_ixs
             )
             # block impossible parent-argument combinations
             #children_score_larg += self.lgen_mask
 
             # rearrange children_score_rgen to index by parent
             # and argument rather than functor and argument
-            # dim: height x imax x batch_size x Qpar x Qgen
-            children_score_rarg = torch.gather(
-                children_score_rgen, dim=3, index=limp_ixs
+            # dim: height x imax x batch_size x Qall x Qgen
+            children_score_Ab = torch.gather(
+                children_score_rgen, dim=3, index=lfunc_ixs
             )
             # block impossible parent-argument combinations
             #children_score_rarg += self.rgen_mask
 
+            ################### Best kbc for Aa operation
+
             # probability that parent category i branches into left argument j
             # and right functor i-aj, that category j spans the words on the
             # left, and that category i-aj spans the words on the right
-            # dim: height x imax x batch_size x Qpar x Qarg
-            combined_scores_larg = scores_larg + children_score_larg
-            # probability that parent category i branches into left functor
-            # i-bj and right argument j, that category i-bj spans the words on
-            # the left, and that category j spans the words on the right
-            # dim: height x imax x batch_size x Qpar x Qgen
-            combined_scores_rarg = scores_rarg + children_score_rarg
-
-            combined_scores_larg = combined_scores_larg.permute(1,2,3,0,4)
-            # dim: imax x batch_size x Qpar x height*Qgen
-            combined_scores_larg = combined_scores_larg.contiguous().view(
-                imax, batch_size, self.Qpar, -1
-            )
-            combined_scores_rarg = combined_scores_rarg.permute(1,2,3,0,4)
-            # dim: imax x batch_size x Qpar x height*Qgen
-            combined_scores_rarg = combined_scores_rarg.contiguous().view(
-                imax, batch_size, self.Qpar, -1
+            # dim: height x imax x batch_size x Qall x Qarg
+            combined_scores_Aa = scores_Aa + children_score_Aa
+            combined_scores_Aa = combined_scores_Aa.permute(1,2,3,0,4)
+            # dim: imax x batch_size x Qall x height*Qgen
+            combined_scores_Aa = combined_scores_Aa.contiguous().view(
+                imax, batch_size, self.Qall, -1
             )
 
-            # dim: imax x batch_size x Qpar
-            lmax_kbc, largmax_kbc = torch.max(combined_scores_larg, dim=3)
-            rmax_kbc, rargmax_kbc = torch.max(combined_scores_rarg, dim=3)
+            # dim: imax x batch_size x Qall
+            max_kbc_Aa, argmax_kbc_Aa = torch.max(combined_scores_Aa, dim=3)
 
-            # dim: imax x batch_size x Qpar
-            l_ks = torch.div(largmax_kbc, self.Qgen, rounding_mode="floor") \
+            # dim: imax x batch_size x Qall
+            ks_Aa = torch.div(argmax_kbc_Aa, self.Qgen, rounding_mode="floor") \
                    + torch.arange(1, imax+1)[:, None, None]. to(self.device)
 
             # NOTE: these are the predcat indices based on the indexing for
             # argument predcats
-            # dim: imax x batch_size x Qpar
-            l_bs = largmax_kbc % (self.Qgen)
+            # dim: imax x batch_size x Qall
+            bs_Aa = argmax_kbc_Aa % (self.Qgen)
 
-            # dim: imax x batch_size x Qpar x 1
-            l_bs_reshape = l_bs.view(imax, batch_size, self.Qpar, 1)
+            # dim: imax x batch_size x Qall x 1
+            bs_reshape_Aa = bs_Aa.view(imax, batch_size, self.Qall, 1)
 
-            # dim: imax x batch_size x Qpar
-            rimp_ixs = rimp_ixs[0]
-            l_cs = torch.gather(rimp_ixs, index=l_bs_reshape, dim=3).squeeze(dim=3)
+            # dim: imax x batch_size x Qall
+            rfunc_ixs = rfunc_ixs[0]
+            cs_Aa = torch.gather(rfunc_ixs, index=bs_reshape_Aa, dim=3).squeeze(dim=3)
 
             # dim: imax x batch_size x Qgen
             pc_ix = self.genpc_2_pc.repeat(imax, batch_size, 1)
 
-            # dim: imax x batch_size x Qpar
-            # now each entry is an index for ix2predcat_all instead of
+            # dim: imax x batch_size x Qall
+            # now each entry is an index for ix2predcat instead of
             # ix2predcat_gen. This is necessary for so that l_cs and l_bs
             # use the same indexing for viterbi_backtrack
-            l_bs_reindexed = torch.gather(pc_ix, dim=-1, index=l_bs)
+            bs_reindexed_Aa = torch.gather(pc_ix, dim=-1, index=bs_Aa)
 
             # dim: 3 x imax x batch_size x par
-            l_kbc = torch.stack([l_ks, l_bs_reindexed, l_cs], dim=0)
+            kbc_Aa = torch.stack([ks_Aa, bs_reindexed_Aa, cs_Aa], dim=0)
+            printDebug("kbc_Aa:", kbc_Aa.permute(1, 2, 3, 0))
 
-            # dim: imax x batch_size x Qpar
-            r_ks = torch.div(rargmax_kbc, self.Qgen, rounding_mode="floor") \
+            ################### Best kbc for Ab operation
+
+            # probability that parent category i branches into left functor
+            # i-bj and right argument j, that category i-bj spans the words on
+            # the left, and that category j spans the words on the right
+            # dim: height x imax x batch_size x Qall x Qgen
+            combined_scores_Ab = scores_Ab + children_score_Ab
+            combined_scores_Ab = combined_scores_Ab.permute(1,2,3,0,4)
+            # dim: imax x batch_size x Qall x height*Qgen
+            combined_scores_Ab = combined_scores_Ab.contiguous().view(
+                imax, batch_size, self.Qall, -1
+            )
+
+            # dim: imax x batch_size x Qall
+            max_kbc_Ab, argmax_kbc_Ab = torch.max(combined_scores_Ab, dim=3)
+
+            # dim: imax x batch_size x Qall
+            ks_Ab = torch.div(argmax_kbc_Ab, self.Qgen, rounding_mode="floor") \
                    + torch.arange(1, imax+1)[:, None, None]. to(self.device)
-            # dim: imax x batch_size x Qpar
-            r_cs = rargmax_kbc % (self.Qgen)
+            # dim: imax x batch_size x Qall
+            cs_Ab = argmax_kbc_Ab % (self.Qgen)
 
-            # dim: imax x batch_size x Qpar x 1
-            r_cs_reshape = r_cs.view(imax, batch_size, self.Qpar, 1)
+            # dim: imax x batch_size x Qall x 1
+            cs_reshape_Ab = cs_Ab.view(imax, batch_size, self.Qall, 1)
 
             # dim: imax x batch_size x Qres
-            limp_ixs = limp_ixs[0]
-            r_bs = torch.gather(limp_ixs, index=r_cs_reshape, dim=3).squeeze(dim=3)
-            # dim: imax x batch_size x Qpar
-            r_cs_reindexed = torch.gather(pc_ix, dim=-1, index=r_cs)
+            lfunc_ixs = lfunc_ixs[0]
+            bs_Ab = torch.gather(lfunc_ixs, index=cs_reshape_Ab, dim=3).squeeze(dim=3)
+            # dim: imax x batch_size x Qall
+            cs_reindexed_Ab = torch.gather(pc_ix, dim=-1, index=cs_Ab)
 
-            # dim: 3 x imax x batch_size x Qpar
-            r_kbc = torch.stack([r_ks, r_bs, r_cs_reindexed], dim=0)
+            # dim: 3 x imax x batch_size x Qall
+            kbc_Ab = torch.stack([ks_Ab, bs_Ab, cs_reindexed_Ab], dim=0)
+            printDebug("kbc_Ab:", kbc_Ab.permute(1, 2, 3, 0))
 
-            # dim: 2 x 3 x imax x batch_size x Qpar
-            lr_kbc = torch.stack([l_kbc, r_kbc], dim=0)
+            ################### Best kbc for Ma operation
+            combined_scores_Ma = scores_Ma + children_score_lgen
+            combined_scores_Ma = combined_scores_Ma.permute(1,2,3,0,4)
+            # dim: imax x batch_size x Qall x height*Qgen
+            combined_scores_Ma = combined_scores_Ma.contiguous().view(
+                imax, batch_size, self.Qall, -1
+            )
 
-            # dim: 2 x imax x batch_size x Qpar
-            lr_max = torch.stack([lmax_kbc, rmax_kbc], dim=0)
+            # dim: imax x batch_size x Qall
+            max_kbc_Ma, argmax_kbc_Ma = torch.max(combined_scores_Ma, dim=3)
 
-            # tells whether left arg or right arg is more likely
-            # each value of the argmax is 0 (left) or 1 (right)
-            # dim: imax x batch_size x Qpar
-            combined_max, combined_argmax = torch.max(lr_max, dim=0)
+            # dim: imax x batch_size x Qall
+            ks_Ma = torch.div(argmax_kbc_Ma, self.Qgen, rounding_mode="floor") \
+                   + torch.arange(1, imax+1)[:, None, None]. to(self.device)
+
+            # dim: imax x batch_size x Qall
+            bs_Ma = argmax_kbc_Ma % (self.Qgen)
+
+            # dim: imax x batch_size x Qall
+            # don't have to reorganize cs because parent and implicit child are
+            # the same for modification
+            # TODO make sure this is correct
+            cs_Ma = torch.arange(self.Qall).to(self.device)
+            cs_Ma = cs_Ma.unsqueeze(dim=0).unsqueeze(dim=0).repeat(imax, batch_size, 1)
+
+            # dim: imax x batch_size x Qall
+            # now each entry is an index for ix2predcat instead of
+            # ix2predcat_gen. This is necessary for so that l_cs and l_bs
+            # use the same indexing for viterbi_backtrack
+            bs_reindexed_Ma = torch.gather(pc_ix, dim=-1, index=bs_Ma)
+
+            torch.set_printoptions(sci_mode=False, precision=2, linewidth=300)
+            printDebug("bs_reindexed_Ma:", bs_reindexed_Ma)
+            printDebug("cs_Ma:", cs_Ma)
+
+
+            # dim: 3 x imax x batch_size x par
+            kbc_Ma = torch.stack([ks_Ma, bs_reindexed_Ma, cs_Ma], dim=0)
+            printDebug("kbc_Ma:", kbc_Ma.permute(1, 2, 3, 0))
+
+            ################### Best kbc for Mb operation
+            combined_scores_Mb = scores_Mb + children_score_rgen
+            combined_scores_Mb = combined_scores_Mb.permute(1,2,3,0,4)
+            # dim: imax x batch_size x Qall x height*Qgen
+            combined_scores_Mb = combined_scores_Mb.contiguous().view(
+                imax, batch_size, self.Qall, -1
+            )
+
+            # dim: imax x batch_size x Qall
+            max_kbc_Mb, argmax_kbc_Mb = torch.max(combined_scores_Mb, dim=3)
+
+            # dim: imax x batch_size x Qall
+            ks_Mb = torch.div(argmax_kbc_Mb, self.Qgen, rounding_mode="floor") \
+                   + torch.arange(1, imax+1)[:, None, None]. to(self.device)
+            # dim: imax x batch_size x Qall
+            cs_Mb = argmax_kbc_Mb % (self.Qgen)
+
+            # dim: imax x batch_size x Qall
+            # don't have to reorganize cs because parent and implicit child are
+            # the same for modification
+            # TODO make sure this is correct
+            bs_Mb = torch.arange(self.Qall).to(self.device)
+            bs_Mb = bs_Mb.unsqueeze(dim=0).unsqueeze(dim=0).repeat(imax, batch_size, 1)
+
+            # dim: imax x batch_size x Qall
+            cs_reindexed_Mb = torch.gather(pc_ix, dim=-1, index=cs_Mb)
+
+            printDebug("bs_Mb:", bs_Mb)
+            printDebug("cs_reindexed_Mb:", cs_reindexed_Mb)
+
+            # dim: 3 x imax x batch_size x Qall
+            kbc_Mb = torch.stack([ks_Mb, bs_Mb, cs_reindexed_Mb], dim=0)
+            printDebug("kbc_Mb:", kbc_Mb.permute(1, 2, 3, 0))
+
+            ################### stack kbcs and find the very best
+
+            # dim: 2 x 3 x imax x batch_size x Qall
+            kbc_allOp = torch.stack([kbc_Aa, kbc_Ab, kbc_Ma, kbc_Mb], dim=0)
+
+            # dim: 2 x imax x batch_size x Qall
+            max_allOp = torch.stack(
+                [max_kbc_Aa, max_kbc_Ab, max_kbc_Ma, max_kbc_Mb], dim=0
+            )
+
+            # tells which operation is most likely
+            # each value of the argmax is:
+            # - 0 (Aa)
+            # - 1 (Ab)
+            # - 2 (Ma)
+            # - 3 (Mb)
+            # dim: imax x batch_size x Qall
+            combined_max, combined_argmax = torch.max(max_allOp, dim=0)
+
+            printDebug("combined_argmax:", combined_argmax)
 
             # dim: imax x batch_size x Qall
             combined_max_expanded = torch.full(
@@ -442,9 +571,9 @@ class BatchCKYParser:
             ).to(self.device)
             # indices for predcats that can be parents
             par_ixs = torch.tensor(
-                [self.ix2predcat_all.inv[pc] for pc in self.ix2predcat_par.values()]
+                [self.ix2predcat.inv[pc] for pc in self.ix2predcat.values()]
             ).to(self.device)
-            # dim: imax x batch_size x Qpar
+            # dim: imax x batch_size x Qall
             par_ixs = par_ixs.repeat(
                 imax, batch_size, 1
             )
@@ -454,14 +583,15 @@ class BatchCKYParser:
             right_chart[height, jmin:jmax] = combined_max_expanded
 
             # gather k, b, and c
-            # dim: 1 x 3 x imax x batch_size x Qpar
+            # dim: 1 x 3 x imax x batch_size x Qall
             combined_argmax = combined_argmax.repeat(3, 1, 1, 1).unsqueeze(dim=0)
             # TODO use different arrangement of dimensions initally to
             # avoid need for permute
-            # dim: 3 x imax x batch_size x Qpar
-            best_kbc = torch.gather(lr_kbc, index=combined_argmax, dim=0).squeeze(dim=0)
-            # dim: imax x batch_size x Qpar x 3
+            # dim: 3 x imax x batch_size x Qall
+            best_kbc = torch.gather(kbc_allOp, index=combined_argmax, dim=0).squeeze(dim=0)
+            # dim: imax x batch_size x Qall x 3
             best_kbc = best_kbc.permute(1, 2, 3, 0)
+            printDebug("best_kbc:", best_kbc)
             backtrack_chart[ij_diff][:imax] = best_kbc
         return left_chart, backtrack_chart
 
@@ -475,7 +605,6 @@ class BatchCKYParser:
         a_ll, top_a = torch.max(p_topnode, dim=-1)
         # top_A = top_A.squeeze()
         # A_ll = A_ll.squeeze()
-        printDebug("viterbi top_a likelihood:", a_ll)
         printDebug("viterbi top_a:", top_a)
 
         expanding_nodes = []
@@ -484,7 +613,8 @@ class BatchCKYParser:
         assert self.this_sent_len > 0, "must call inside pass first!"
 
         a = top_a[sent_index].item()
-        a_pred, a_cat = self.ix2predcat_all[a]
+        a_pred, a_cat = self.ix2predcat[a]
+        printDebug("top a predcat: {}:{}".format(self.ix2cat[a_cat], self.ix2pred[a_pred]))
         #A_cat_str = str(self.ix2cat[A_cat])
         a_str = "{}:{}".format(self.ix2cat[a_cat], self.ix2pred[a_pred])
 
@@ -506,11 +636,14 @@ class BatchCKYParser:
             ij_diff = working_node.j - working_node.i - 1
             # TODO rename .cat to .predcat
             pc_ix = working_node.cat
-            pc_par_ix = self.ix2predcat_par.inv[self.ix2predcat_all[pc_ix]]
-            k_b_c = backtrack_chart[ij_diff][ working_node.i, sent_index, pc_par_ix]
+            tempp, tempc = self.ix2predcat[pc_ix]
+            printDebug("current predcat: {}:{}".format(self.ix2cat[tempc], self.ix2pred[tempp]))
+            k_b_c = backtrack_chart[ij_diff][ working_node.i, sent_index, pc_ix]
             split_point, b, c = k_b_c[0].item(), k_b_c[1].item(), k_b_c[2].item()
-            b_pred, b_cat = self.ix2predcat_all[b]
-            c_pred, c_cat = self.ix2predcat_all[c]
+            b_pred, b_cat = self.ix2predcat[b]
+            c_pred, c_cat = self.ix2predcat[c]
+            printDebug("b predcat: {}:{}".format(self.ix2cat[b_cat], self.ix2pred[b_pred]))
+            printDebug("c predcat: {}:{}".format(self.ix2cat[c_cat], self.ix2pred[c_pred]))
             b_str = "{}:{}".format(self.ix2cat[b_cat], self.ix2pred[b_pred])
             c_str = "{}:{}".format(self.ix2cat[c_cat], self.ix2pred[c_pred])
 
