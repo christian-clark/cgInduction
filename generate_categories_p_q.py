@@ -24,8 +24,7 @@ DEFAULT_CONFIG = {
         "q": 0.5,
         "maxCats": 100,
         "minLogProb": -10,
-        "opACost": 0,
-        "opBCost": 0
+        "printScores": 1
     }
 }
 
@@ -301,10 +300,14 @@ def main():
         config[k] = v
     
     categories, scores = generate_categories(config)
-    print("Category\tScore")
-    for i, cat in enumerate(categories):
-        score = scores[i]
-        print("{}\t{}".format(cat, round(score, 2)))
+    if config.getboolean("printScores"):
+        print("Category\tScore")
+        for i, cat in enumerate(categories):
+            score = scores[i]
+            print("{}\t{}".format(cat, round(score, 2)))
+    else:
+        for cat in categories:
+            print(cat)
 
 
 if __name__ == "__main__":

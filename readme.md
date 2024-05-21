@@ -1,5 +1,5 @@
 # Categorial Grammar Induction
-The categorial grammar induction system presented in "Categorial Grammar Induction from Raw Data" by Clark and Schuler (2023).
+This repository contains the categorial grammar induction system presented in ["Categorial Grammar Induction from Raw Data"](https://aclanthology.org/2023.findings-acl.149/) and ["Categorial Grammar Induction with Stochastic Category Selection"](https://aclanthology.org/2024.lrec-main.258/) by Clark and Schuler (2023, 2024).
 
 Major dependencies include:
 
@@ -17,11 +17,29 @@ conda env create -f environment.yml
 conda activate cgInduction
 ```
 
+## Stochastic Category Selection
+To generate a set of categories following the formulation in Clark and Schuler (2024), run `generate_categories_p_q.py`.
+For example, to replicate the category set used in the paper:
+
+```
+python generate_categories_p_q.py p=0.5 q=0.01 maxCats=2500 minLogProb=-1000000 printScores=0 > categories_2445.txt
+```
+
 
 ## Training
 `main.py` is the main training script.
-Sample command:
+Sample command using stochastically generated categories:
+```
+python main.py train \
+    model=adamStochasticCategories \
+    train_sents=adam.senttoks \
+    valid_sents=adam.senttoks \
+    valid_trees=adam.senttrees \
+    category_list=categories_2445.txt
+```
 
+
+Sample command using categories generated according to a fixed number of primitives and maximum depth, following Clark and Schuler (2023):
 ```
 python main.py train \
     model=adamPrim2Depth2 \
@@ -32,8 +50,8 @@ python main.py train \
     max_func_depth=2
 ```
 
-The default model configuration is defined in `DEFAULT_CONFIG` at the beginning of this script.
-Values in the default configuration can be overridden on the command line:
+The default model configuration is defined in `DEFAULT_CONFIG` at the beginning of `main.py`.
+Other values in the default configuration can also be overridden on the command line, such as `device`, `eval_device`, and `learning_rate`:
 
 ```
 python main.py train \
