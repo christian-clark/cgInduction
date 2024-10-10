@@ -211,8 +211,8 @@ def setup(eval_only=False):
 
     parser = BasicCGInducer(
         config,
-        num_chars=len(char_lexicon),
-        num_words=len(word_lexicon)
+        word_lexicon,
+        num_chars=len(char_lexicon)
     )
 
 
@@ -323,15 +323,19 @@ def train():
                 logging.info("======== START GRAMMAR DUMP ========")
                 #torch.set_printoptions(precision=2, linewidth=120)
                 torch.set_printoptions(sci_mode=False, precision=2, linewidth=300)
-                #logging.info("cat_arg_depths: {}".format(model.inducer.cat_arg_depths))
+                logging.info("word_lexicon: {}".format(model.inducer.word_lexicon))
                 logging.info("ix2cat: {}".format(model.inducer.ix2cat))
-                logging.info("par_cats: {}".format(model.inducer.par_cats))
+                logging.info("all_cats: {}".format(model.inducer.all_cats))
                 logging.info("gen_cats: {}".format(model.inducer.gen_cats))
                 logging.info("ix2pred: {}".format(model.inducer.ix2pred))
-                logging.info("ix2predcat_all: {}".format(readableIx2predCat(model.inducer.ix2predcat_all, model.inducer.ix2pred, model.inducer.ix2cat_all)))
-                logging.info("ix2predcat_gen: {}".format(readableIx2predCat(model.inducer.ix2predcat_gen, model.inducer.ix2pred, model.inducer.ix2cat_all)))
-                logging.info("ix2predcat_par: {}".format(readableIx2predCat(model.inducer.ix2predcat_par, model.inducer.ix2pred, model.inducer.ix2cat_all)))
+                logging.info("ix2predcat: {}".format(readableIx2predCat(model.inducer.ix2predcat, model.inducer.ix2pred, model.inducer.ix2cat)))
+                logging.info("ix2predcat_gen: {}".format(readableIx2predCat(model.inducer.ix2predcat_gen, model.inducer.ix2pred, model.inducer.ix2cat)))
                 logging.info("genpc_2_pc: {}".format(model.inducer.genpc_2_pc))
+
+                logging.info("operation_mask")
+                logging.info(model.inducer.operation_mask)
+                logging.info("word_mask")
+                logging.info(model.inducer.word_mask)
 
                 logging.info("p0 probs")
                 logging.info(torch.exp(model.inducer.parser.log_p0))
@@ -339,28 +343,41 @@ def train():
                 logging.info("split probs")
                 logging.info(torch.exp(model.inducer.parser.split_scores))
 
-                lr_scores = model.inducer.lr_mlp(model.inducer.par_predcat_onehot)
-                lr_probs = F.log_softmax(lr_scores, dim=1)
-                logging.info("lr probs")
-                logging.info(torch.exp(lr_probs))
+                op_scores = model.inducer.operation_mlp(model.inducer.par_predcat_onehot)
+                op_scores += model.inducer.operation_mask
+                op_probs = F.log_softmax(op_scores, dim=1)
+                logging.info("op probs")
+                logging.info(torch.exp(op_probs))
 
                 logging.info("association probs")
                 logging.info(torch.exp(model.inducer.associations))
 
                 mlp_out = model.inducer.rule_mlp(model.inducer.par_cat_onehot)
-                rule_scores_lgen = mlp_out + model.inducer.lgen_mask
-                rule_probs_lgen = F.log_softmax(rule_scores_lgen, dim=1)
-                rule_scores_rgen = mlp_out + model.inducer.rgen_mask
-                rule_probs_rgen = F.log_softmax(rule_scores_rgen, dim=1)
-                logging.info("rule_probs_lgen")
-                logging.info(torch.exp(rule_probs_lgen))
-                logging.info("rule_probs_rgen")
-                logging.info(torch.exp(rule_probs_rgen))
+                # dim: Call x Cgen x 4
+                rule_scores = mlp_out.unsqueeze(dim=-1).repeat(1, 1, 4)
+                rule_scores[..., 0] += model.inducer.rfunc_mask
+                rule_scores[..., 1] += model.inducer.lfunc_mask
+                rule_scores[..., 2] += model.inducer.mod_mask[None, :]
+                rule_scores[..., 3] += model.inducer.mod_mask[None, :]
+                rule_probs = torch.softmax(rule_scores, dim=1)
+                logging.info("rule_probs_Aa")
+                logging.info(rule_probs[..., 0])
+                logging.info("rule_probs_Ab")
+                logging.info(rule_probs[..., 1])
+                logging.info("rule_probs_Ma")
+                logging.info(rule_probs[..., 2])
+                logging.info("rule_probs_Mb")
+                logging.info(rule_probs[..., 3])
 
-                logging.info("combined G lgen probs")
-                logging.info(torch.exp(model.inducer.parser.log_G_lgen))
-                logging.info("combined G rgen probs")
-                logging.info(torch.exp(model.inducer.parser.log_G_rgen))
+
+                logging.info("combined G Aa probs")
+                logging.info(torch.exp(model.inducer.parser.log_G[..., 0]))
+                logging.info("combined G Ab probs")
+                logging.info(torch.exp(model.inducer.parser.log_G[..., 1]))
+                logging.info("combined G Ma probs")
+                logging.info(torch.exp(model.inducer.parser.log_G[..., 2]))
+                logging.info("combined G Mb probs")
+                logging.info(torch.exp(model.inducer.parser.log_G[..., 3]))
 
                 word_dist = torch.exp(model.inducer.emit_prob_model.dist)
                 logging.info("word_dist shape")

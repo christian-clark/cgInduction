@@ -94,9 +94,10 @@ class CharProbRNN(nn.Module):
 
 
 class WordProbFCFixVocabCompound(nn.Module):
-    def __init__(self, num_words, state_dim, dropout=0.0):
+    def __init__(self, num_words, state_dim, word_mask=None):
         printDebug("num_words:", num_words)
         super(WordProbFCFixVocabCompound, self).__init__()
+        self.word_mask = word_mask
         self.fc = nn.Sequential(nn.Linear(state_dim, state_dim),
                                        ResidualLayer(state_dim, state_dim),
                                        ResidualLayer(state_dim, state_dim),
@@ -104,10 +105,12 @@ class WordProbFCFixVocabCompound(nn.Module):
 
     def forward(self, words, predcat_embs, set_grammar=True):
         if set_grammar:
-            dist = nn.functional.log_softmax(self.fc(predcat_embs), 1).t() # vocab, predcats
-            self.dist = dist
-        else:
-            pass
+            # dim: Qall x vocab
+            dist = self.fc(predcat_embs)
+            if self.word_mask is not None:
+                dist += self.word_mask
+            # dim: vocab x Qall
+            self.dist = torch.log_softmax(dist, 1).t()
         word_indices = words[:, 1:-1]
 
         logprobs = self.dist[word_indices, :] # sent, word, predcats; get rid of bos and eos
