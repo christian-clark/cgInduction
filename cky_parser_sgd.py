@@ -1,12 +1,9 @@
-# import numpy as np
-import torch, logging, datetime
+import torch, math
 from treenode import Node, nodes_to_tree
-import torch.nn.functional as F
-import numpy as np
 
 QUASI_INF = 10000000.
 
-DEBUG = True
+DEBUG = False
 def printDebug(*args, **kwargs):
     if DEBUG:
         print("DEBUG: ", end="")
@@ -68,11 +65,40 @@ class BatchCKYParser:
         # TODO maybe the two compute_inside_ methods can be merged?
         if loss_type == "marginal":
             left_chart, backtrack_chart = self.compute_inside_marginal(sents)
+        elif loss_type == "mixed":
+            left_chart_marg, _ = self.compute_inside_marginal(sents)
+            left_chart, backtrack_chart = self.compute_inside_bestparse(sents)
+        # entropy hybrid loss combines (1) the usual marginal loss and
+        # (2) the average entropy of predcats given words
+        elif loss_type == "entropy_hybrid":
+            left_chart, backtrack_chart = self.compute_inside_marginal(sents)
+            # TODO add average entropy term here
+            
         else:
             assert loss_type == "best_parse"
             left_chart, backtrack_chart = self.compute_inside_bestparse(sents)
-    
-        logprob_list = self.likelihood_from_chart(left_chart, loss_type)
+
+        if loss_type == "mixed":
+            logprob_list_marg = self.likelihood_from_chart(
+                left_chart_marg, loss_type="marginal"
+            )
+            logprob_list_best = self.likelihood_from_chart(
+                left_chart, loss_type="best_parse"
+            )
+            # this just averages the two logprobs
+            # TODO allow config to pass in a weight for best parse between
+            # 0 and 1
+            BEST_PARSE_WEIGHT = 0.9
+            prob_list_marg = math.e ** logprob_list_marg
+            prob_list_best = math.e ** logprob_list_best
+            prob_list_interp = (1-BEST_PARSE_WEIGHT)*prob_list_marg \
+                + BEST_PARSE_WEIGHT*prob_list_best
+            logprob_list = torch.log(prob_list_interp)
+            #logprobs_stack = torch.stack([logprob_list_marg, logprob_list_best])
+            #logprob_list = torch.logsumexp(logprobs_stack, dim=0) - math.log(2)
+        else:
+            logprob_list = self.likelihood_from_chart(left_chart, loss_type)
+
         if viterbi_trees:
             vtree_list = list()
             vproduction_counter_dict_list = list()

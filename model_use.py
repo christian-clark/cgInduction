@@ -4,7 +4,7 @@ import time
 import logging
 import numpy as np
 
-DEBUG = False
+DEBUG = True
 
 def printDebug(*args, **kwargs):
     if DEBUG:
@@ -19,12 +19,12 @@ def slice_tensor(tensor, batch_size, flatten=False):
                  for i in range(0, tensor.shape[0], batch_size)])
 
 
-def train_model(
-        epoch, model, optimizer, train, batch_size, max_grad_norm
-    ):
+def train_model(epoch, model, optimizer, train, config):
     """
     Training model for one epoch
     """
+    batch_size = config.getint("batch_size")
+    max_grad_norm = config.getfloat("max_grad_norm")
     torch.autograd.set_detect_anomaly(True)
     model.train()
 
@@ -69,7 +69,18 @@ def train_model(
             ws, cs, var_cs, sliced_masks = (w,), (c,), (var_c,), (masks,)
 
         for ww, cc, varcc, mm in zip(ws, cs, var_cs, sliced_masks):
-            loss = model.forward(ww, varcc)
+            parse_loss = model.forward(ww, varcc)
+            #printDebug("parse loss:", parse_loss)
+            logging.info("parse loss: {}".format(parse_loss))
+            if config.getboolean("use_entropy_loss"):
+                entropy_loss = model.get_category_entropy_loss()
+                #printDebug("entropy loss:", entropy_loss)
+                logging.info("entropy loss: {}".format(entropy_loss))
+                entropy_weight = config.getfloat("entropy_loss_weight")
+                assert entropy_weight >= 0 and entropy_weight <= 1
+                loss = (1-entropy_weight)*parse_loss + entropy_weight*entropy_loss
+            else:
+                loss = parse_loss
             loss.backward()
             total_loss += loss.item()
 

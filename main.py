@@ -33,7 +33,8 @@ DEFAULT_CONFIG = {
         "eval_patient": 5,
         "loss_type": "marginal",
         "dump_grammar": "yes",
-        "modification_ops": "no"
+        "modification_ops": "no",
+        "use_entropy_loss": "no"
     }
 }
 
@@ -287,8 +288,7 @@ def train():
         
     for epoch in range(config.getint("start_epoch"), config.getint("max_epoch")):
         optimizer = model_use.train_model(
-            epoch, model, optimizer, train, config.getint("batch_size"),
-            config.getfloat("max_grad_norm")
+            epoch, model, optimizer, train, config
         )
 
         if ((epoch - config.getint("eval_start_epoch")) % config.getint("eval_steps") == 0 \
@@ -372,6 +372,13 @@ def train():
                 logging.info(word_dist.shape)
                 logging.info("word_dist")
                 logging.info(word_dist)
+
+                # ignores oov, pad, etc.
+                relevant_word_dist = word_dist[6:]
+                logging.info("relevant_word_dist shape")
+                logging.info(relevant_word_dist.shape)
+                logging.info("relevant_word_dist")
+                logging.info(relevant_word_dist)
                 logging.info("======== END GRAMMAR DUMP ========")
 
 
@@ -383,16 +390,78 @@ def train():
 
 def test():
     config, model, _, valid_sents, valid_trees, valid, _, logfile_fh = setup(eval_only=True)
+
     logging.info('EVALING.')
     model.to(config["eval_device"])
     _, trees = model_use.parse_dataset(model, valid, 0)
-    valid_pred_trees = postprocess.print_trees(
-        trees, valid_sents, 0, config["model_path"]
-    )
-    eval_access(valid_pred_trees, valid_trees, model.writer, 0)
-    #model.to(config["device"])
-    model.writer.close()
-    logfile_fh.close()
+    if config.getboolean("dump_grammar"):
+        logging.info("======== START GRAMMAR DUMP ========")
+        #torch.set_printoptions(precision=2, linewidth=120)
+        torch.set_printoptions(sci_mode=False, precision=2, linewidth=300)
+        logging.info(dir(model.inducer))
+        logging.info(dir(model.inducer.parser))
+        logging.info("cat_arg_depths: {}".format(model.inducer.cat_arg_depths))
+        logging.info("arg_depth_to_cats_par: {}".format(model.inducer.arg_depth_to_cats_par))
+        logging.info("arg_depth_to_cats_gen: {}".format(model.inducer.arg_depth_to_cats_gen))
+        logging.info("ix2cat_all: {}".format(model.inducer.ix2cat_all))
+        logging.info("par_cats: {}".format(model.inducer.par_cats))
+        logging.info("gen_cats: {}".format(model.inducer.gen_cats))
+        logging.info("ix2pred: {}".format(model.inducer.ix2pred))
+        logging.info("ix2predcat: {}".format(readableIx2predCat(model.inducer.ix2predcat, model.inducer.ix2pred, model.inducer.ix2cat_all)))
+        logging.info("ix2predcat_gen: {}".format(readableIx2predCat(model.inducer.ix2predcat_gen, model.inducer.ix2pred, model.inducer.ix2cat_all)))
+        logging.info("ix2predcat_par: {}".format(readableIx2predCat(model.inducer.ix2predcat_par, model.inducer.ix2pred, model.inducer.ix2cat_all)))
+        logging.info("genpc_2_pc: {}".format(model.inducer.genpc_2_pc))
+
+        logging.info("p0 probs")
+        logging.info(torch.exp(model.inducer.parser.log_p0))
+
+        logging.info("split probs")
+        logging.info(torch.exp(model.inducer.parser.split_scores))
+
+        operation_scores = model.inducer.operation_mlp(model.inducer.par_predcat_onehot)
+        operation_probs = F.log_softmax(operation_scores, dim=1)
+        logging.info("operation probs")
+        logging.info(torch.exp(operation_probs))
+
+        logging.info("association probs")
+        logging.info(torch.exp(model.inducer.associations))
+
+        mlp_out = model.inducer.rule_mlp(model.inducer.par_cat_onehot)
+        rule_scores_Aa = mlp_out[:, :model.inducer.cgen]
+        rule_probs_Aa = F.log_softmax(rule_scores_Aa, dim=1)
+        rule_scores_Ab = mlp_out[:, model.inducer.cgen:]
+        rule_probs_Ab = F.log_softmax(rule_scores_Ab, dim=1)
+        logging.info("rule_mlp Aa probs")
+        logging.info(torch.exp(rule_probs_Aa))
+        logging.info("rule_mlp Ab probs")
+        logging.info(torch.exp(rule_probs_Ab))
+
+        logging.info("combined G Aa probs")
+        logging.info(torch.exp(model.inducer.parser.log_G_Aa))
+        logging.info("combined G Ab probs")
+        logging.info(torch.exp(model.inducer.parser.log_G_Ab))
+
+        word_dist = torch.exp(model.inducer.emit_prob_model.dist)
+        logging.info("word_dist shape")
+        logging.info(word_dist.shape)
+        logging.info("word_dist")
+        logging.info(word_dist)
+
+        # ignores oov, pad, etc.
+        relevant_word_dist = word_dist[6:]
+        logging.info("relevant_word_dist shape")
+        logging.info(relevant_word_dist.shape)
+        logging.info("relevant_word_dist")
+        logging.info(relevant_word_dist)
+        logging.info("======== END GRAMMAR DUMP ========")
+
+    #valid_pred_trees = postprocess.print_trees(
+    #    trees, valid_sents, 0, config["model_path"]
+    #)
+    #eval_access(valid_pred_trees, valid_trees, model.writer, 0)
+    ##model.to(config["device"])
+    #model.writer.close()
+    #logfile_fh.close()
 
 
 if __name__ == "__main__":
