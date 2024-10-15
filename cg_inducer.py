@@ -79,13 +79,13 @@ class BasicCGInducer(nn.Module):
 
         self.all_cats = sorted(all_cats)
         self.qall = len(self.all_cats)
-        ix2cat = bidict()
+        ix2cat = bidict.bidict()
         for cat in self.all_cats:
             ix2cat[len(ix2cat)] = cat
         self.ix2cat = ix2cat
         self.gen_cats = sorted(gen_cats)
         self.qgen = len(self.gen_cats)
-        ix2cat_gen = bidict()
+        ix2cat_gen = bidict.bidict()
         for cat in self.gen_cats:
             ix2cat_gen[len(ix2cat_gen)] = cat
         self.ix2cat_gen = ix2cat_gen

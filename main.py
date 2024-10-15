@@ -221,19 +221,15 @@ def setup(eval_only=False):
 
     parser = BasicCGInducer(
         config,
-        num_chars=len(char_lexicon),
         num_words=len(word_lexicon)
     )
 
 
     logging.info(
-        "Total number of categories: {}".format(parser.num_all_cats)
+        "Total number of categories: {}".format(parser.qall)
     )
     logging.info(
-        "Number of argument categories: {}".format(parser.num_arg_cats)
-    )
-    logging.info(
-        "Number of result categories: {}".format(parser.num_res_cats)
+        "Number of generated categories: {}".format(parser.qgen)
     )
     logging.info(
         "Examples of categories: {}".format(list(parser.ix2cat.items())[:100])

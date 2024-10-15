@@ -353,7 +353,7 @@ class BatchCKYParser:
             max_kbc_Aa, argmax_kbc_Aa = torch.max(combined_Aa, dim=3)
 
             # dim: imax x batch_size x qall
-            ks_Aa = torch.div(argmax_kbc_Aa, self.Qgen, rounding_mode="floor") \
+            ks_Aa = torch.div(argmax_kbc_Aa, self.qgen, rounding_mode="floor") \
                    + torch.arange(1, imax+1)[:, None, None]. to(self.device)
 
             # NOTE: these are the predcat indices based on the indexing for
@@ -423,7 +423,7 @@ class BatchCKYParser:
             ################### Best kbc for Ma operation
             combined_Ma = G_Ma + children_prob_lgen
             combined_Ma = combined_Ma.permute(1,2,3,0,4)
-            # dim: imax x batch_size x qall x height*Qgen
+            # dim: imax x batch_size x qall x height*qgen
             combined_Ma = combined_Ma.contiguous().view(
                 imax, batch_size, self.qall, -1
             )
@@ -604,8 +604,8 @@ class BatchCKYParser:
         else:
             lexis_probs = self.log_lexis.log_prob(sent_embs) # sentlen, batch, terms
         # print('lexical', lexis_probs)
-        if self.pcfg_split is not None:
-            lexis_probs = lexis_probs + self.pcfg_split[:, 1] # sentlen, batch, p
+        if self.split_probs is not None:
+            lexis_probs = lexis_probs + self.split_probs[:, 1] # sentlen, batch, p
             full_lexis_probs = lexis_probs
         else:
             full_lexis_probs = torch.full((lexis_probs.shape[0], lexis_probs.shape[1], self.K), SMALL_NEGATIVE_NUMBER,

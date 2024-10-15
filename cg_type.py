@@ -128,8 +128,8 @@ def read_categories_from_file(f):
         cat = category_from_string(l.strip())
         if cat in all_cats:
             printDebug("warning: category {} is duplicated".format(cat))
-        elif cat.arg_depth() > 2:
-            raise Exception("Inducer does not currently support categories that take more than 2 arguments")
+        #elif cat.arg_depth() > 2:
+            #raise Exception("Inducer does not currently support categories that take more than 2 arguments")
         else:
             all_cats.add(cat)
     # categories that can be results from argument attachemnt
