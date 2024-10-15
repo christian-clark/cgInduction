@@ -25,6 +25,14 @@ class CGNode:
     def is_primitive(self):
         return self.res_arg is None
 
+    def is_modifier(self):
+        # u-av categories can be modifiers
+        if self.is_primitive(): return False
+        res, arg = self.res_arg
+        return self.val == "-a" \
+            and res.is_primitive() \
+            and arg.is_primitive()
+
     def __str__(self):
         stack, out = list(), list()
         CGNode._build_str(self, stack, out)
@@ -64,50 +72,6 @@ class CGNode:
     # needed for sorting lists of CGNodes
     def __lt__(self, other):
         return str(self) < str(other)
-
-
-
-def generate_categories_by_depth(
-    num_primitives, max_depth, max_arg_depth=None
-):
-    OPERATORS = ["-a", "-b"]
-    if max_arg_depth is None:
-        max_arg_depth = max_depth
-    else:
-        assert max_depth >= max_arg_depth
-    # dictionary mapping integer i to set of cats of depth less than
-    # or equal to i
-    cs_dleq = dict()
-    cs_dleq[-1] = {}
-    cs_dleq[0] = {CGNode(str(p)) for p in range(num_primitives)}
-    ix2cat = bidict.bidict()
-    ix2depth = list()
-    # sorting ensures cats will be added to ix2cat in a consistent order
-    # across runs (for reproducibility)
-    for cat in sorted(cs_dleq[0]):
-        ix2cat[len(ix2cat)] = cat
-        ix2depth.append(0)
-
-    for i in range(max_depth):
-        cs_dleqi = cs_dleq[i]
-        # constrain argument cat to have depth no greater than max_arg_depth
-        cs_arg = cs_dleq[min([i, max_arg_depth])]
-        cs_dleqiminus1 = cs_dleq[i-1]
-        children_i = set(prod(cs_dleqi, cs_arg))
-        children_iminus1 = set(prod(cs_dleqiminus1, cs_dleqiminus1))
-        cs_deqiplus1 = set()
-        # children_i - children_iminus1 is the set of (result, argument)
-        # pairs such that the result or argument is of depth i. When
-        # a parent node is created with these two children, its depth will
-        # be i+1
-        for res, arg in children_i - children_iminus1:
-            for o in OPERATORS:
-                cs_deqiplus1.add(CGNode(o, res, arg))
-        cs_dleq[i+1] = cs_dleq[i].union(cs_deqiplus1)
-        for cat in sorted(cs_deqiplus1):
-            ix2cat[len(ix2cat)] = cat
-            ix2depth.append(i+1)
-    return cs_dleq, ix2cat, ix2depth
 
 
 def category_from_string(string):
@@ -164,24 +128,53 @@ def read_categories_from_file(f):
         cat = category_from_string(l.strip())
         if cat in all_cats:
             printDebug("warning: category {} is duplicated".format(cat))
+        elif cat.arg_depth() > 2:
+            raise Exception("Inducer does not currently support categories that take more than 2 arguments")
         else:
             all_cats.add(cat)
+    # categories that can be results from argument attachemnt
     res_cats = set()
+    # categories that can be arguments to argument attachment
     arg_cats = set()
+    # primitive categories
+    prim_cats = set()
+    # categories that can be modifiers (must be u-av, where u and v
+    # are primitives)
+    mod_cats = set()
     for cat in all_cats:
-        if cat.is_primitive(): continue
+        if cat.is_primitive():
+            prim_cats.add(cat)
+            continue
+        if cat.is_modifier():
+            mod_cats.add(cat)
         res, arg = cat.res_arg
-        if not res in all_cats or not arg in all_cats:
-            raise Exception("if category (res)(op)(arg) is in the list, res and arg must be in the list too")
-        res_cats.add(res)
-        arg_cats.add(arg)
-    # categories that can be arguments or results come first in ix2cat
-    ix2cat = bidict.bidict()
-    res_arg_cats = res_cats.union(arg_cats)
-    for cat in res_arg_cats:
-        ix2cat[len(ix2cat)] = cat
-    for cat in all_cats - res_arg_cats:
-        ix2cat[len(ix2cat)] = cat
-    assert len(ix2cat) == len(all_cats)
-    return all_cats, res_cats, arg_cats, ix2cat
+        if res in all_cats and arg in all_cats:
+            res_cats.add(res)
+            arg_cats.add(arg)
+        # NOTE: hypothetically you could allow a category u-av to be included
+        # even if u and v weren't in all_cats, since u-av can be a modifier.
+        # But this complicates the logic enough in cg_inducer that I'm not
+        # doing it
+        else:
+            raise Exception("if category (res)(op)(arg) is in the list, and it can't be a modifier category, res and arg must be in the list too.")
+#    # categories that can be parents of a binary-branching rule
+#    par_cats = set()
+#    # types of categories that can be parents:
+#    # * u-av cats (modifiers can be modified)
+#    par_cats.update(mod_cats)
+#    # * primitive cats (can be modified)
+#    par_cats.update(prim_cats)
+#    # * arg cats (can be modified)
+#    par_cats.update(arg_cats)
+#    # * res cats (can undergo argument attachment)
+#    par_cats.update(res_cats)
+#
+    # categories that can be generated children from a binary-branching rule
+    gen_cats = set()
+    # types of categories that can be generated children:
+    # * u-av cats (modifiers)
+    gen_cats.update(mod_cats)
+    # * arg cats
+    gen_cats.update(arg_cats)
 
+    return all_cats, gen_cats, arg_cats, res_cats

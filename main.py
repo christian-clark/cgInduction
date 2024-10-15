@@ -356,6 +356,57 @@ def train():
                 if patient >= config.getint("eval_patient"):
                     break
 
+            if config.getboolean("dump_grammar"):
+                logging.info("======== START GRAMMAR DUMP ========")
+                #torch.set_printoptions(precision=2, linewidth=120)
+                torch.set_printoptions(sci_mode=False, precision=2, linewidth=300)
+                logging.info("word_lexicon: {}".format(model.inducer.word_lexicon))
+                logging.info("ix2cat: {}".format(model.inducer.ix2cat))
+                logging.info("all_cats: {}".format(model.inducer.all_cats))
+                logging.info("gen_cats: {}".format(model.inducer.gen_cats))
+                logging.info("ix2cat: {}".format(model.inducer.ix2cat))
+                logging.info("ix2cat_gen: {}".format(model.inducer.ix2cat_gen))
+
+                logging.info("root probs")
+                logging.info(torch.exp(model.inducer.parser.root_probs))
+
+                logging.info("split probs")
+                logging.info(torch.exp(model.inducer.parser.split_probs))
+
+                qgen = model.inducer.qgen
+                # dim: qall x 4qgen
+                rule_scores = model.inducer.rule_mlp(model.inducer.par_cat_onehot)
+                rule_scores[:, :qgen] += model.inducer.rfunc_mask
+                rule_scores[:, qgen:2*qgen] += model.inducer.lfunc_mask
+                rule_scores[:, 2*qgen:3*qgen] += model.inducer.mod_mask[None, :]
+                rule_scores[:, 3*qgen:] += model.inducer.mod_mask[None, :]
+                rule_probs = rule_scores.softmax(dim=1)
+                logging.info("rule_probs_Aa")
+                logging.info(rule_probs[:, :qgen])
+                logging.info("rule_probs_Ab")
+                logging.info(rule_probs[:, qgen:2*qgen])
+                logging.info("rule_probs_Ma")
+                logging.info(rule_probs[:, 2*qgen:3*qgen])
+                logging.info("rule_probs_Mb")
+                logging.info(rule_probs[:, 3*qgen:])
+
+
+                logging.info("combined G Aa probs")
+                logging.info(torch.exp(model.inducer.parser.full_G[:, :qgen]))
+                logging.info("combined G Ab probs")
+                logging.info(torch.exp(model.inducer.parser.full_G[:, qgen:2*qgen]))
+                logging.info("combined G Ma probs")
+                logging.info(torch.exp(model.inducer.parser.full_G[:, 2*qgen:3*qgen]))
+                logging.info("combined G Mb probs")
+                logging.info(torch.exp(model.inducer.parser.full_G[:, 3*qgen:]))
+
+                word_dist = torch.exp(model.inducer.emit_prob_model.dist)
+                logging.info("word_dist shape")
+                logging.info(word_dist.shape)
+                logging.info("word_dist")
+                logging.info(word_dist)
+                logging.info("======== END GRAMMAR DUMP ========")
+
     model.writer.close()
     logfile_fh.close()
 

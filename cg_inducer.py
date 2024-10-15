@@ -1,10 +1,8 @@
-import torch, bidict, random, numpy as np, torch.nn.functional as F
+import bidict, numpy as np, torch, torch.nn.functional as F
 from torch import nn
 from cky_parser_sgd import BatchCKYParser
-from char_coding_models import CharProbRNN, ResidualLayer, \
-    WordProbFCFixVocabCompound
-from cg_type import CGNode, generate_categories_by_depth, \
-    read_categories_from_file
+from char_coding_models import ResidualLayer, WordProbFCFixVocabCompound
+from cg_type import CGNode, read_categories_from_file
 
 QUASI_INF = 10000000.
 DEBUG = False
@@ -16,84 +14,39 @@ def printDebug(*args, **kwargs):
 
 
 class BasicCGInducer(nn.Module):
-    def __init__(self, config, num_chars, num_words):
+    def __init__(self, config, num_words):
         super(BasicCGInducer, self).__init__()
         self.state_dim = config.getint("state_dim")
-        self.rnn_hidden_dim = config.getint("rnn_hidden_dim")
         self.model_type = config["model_type"]
-
-
         self.device = config["device"]
         self.eval_device = config["eval_device"]
 
-        if self.model_type == 'char':
-            self.emit_prob_model = CharProbRNN(
-                num_chars,
-                state_dim=self.state_dim,
-                hidden_size=self.rnn_hidden_dim
-            )
-        elif self.model_type == 'word':
-            self.emit_prob_model = WordProbFCFixVocabCompound(
-                num_words, self.state_dim
-            )
-        else:
-            raise ValueError("Model type should be char or word")
-
-
-        self.num_primitives = config.getint("num_primitives", fallback=None)
-        self.max_func_depth = config.getint("max_func_depth", fallback=None)
-        self.max_arg_depth = config.getint("max_arg_depth", fallback=None)
-        self.cats_list = config.get("category_list", fallback=None)
-        self.arg_depth_penalty = config.getfloat(
-            "arg_depth_penalty", fallback=None
+        # note: this model only supports a word-level model
+        # jin et al define a character model that performs better but is
+        # slower
+        self.emit_prob_model = WordProbFCFixVocabCompound(
+            num_words, self.state_dim
         )
-        self.left_arg_penalty = config.getfloat(
-            "left_arg_penalty", fallback=None
-        )
+        # specify a file with a list of categories
+        # (used in 2024 COLING paper)
+        self.cats_list = config.get("category_list")
+        self.init_cats()
+        self.init_masks()
 
-        # option 1: specify a set of categories according to maximum depth
-        # and number of primitives (used in 2023 ACL Findings paper)
-        if self.num_primitives is not None:
-            assert self.max_func_depth is not None
-            assert self.cats_list is None
-            if self.max_arg_depth is None:
-                self.max_arg_depth = self.max_func_depth - 1
-            self.init_cats_by_depth()
-
-        # option 2: specify a file with a list of categories
-        else:
-            assert self.cats_list is not None
-            # all of this stuff is just for option 1
-            assert self.max_func_depth is None
-            assert self.max_arg_depth is None
-            assert self.arg_depth_penalty is None
-            assert self.left_arg_penalty is None
-            self.init_cats_from_list()
-
-        # CG: "embeddings" for the categories are just one-hot vectors
+        # "embeddings" for the categories are just one-hot vectors
         # these are used for result categories
-        self.fake_emb = nn.Parameter(torch.eye(self.num_res_cats))
+        self.fake_emb = nn.Parameter(torch.eye(self.qall))
         state_dim = self.state_dim
         # actual embeddings are used to calculate split scores
         # (i.e. prob of terminal vs nonterminal)
+        # dim: qall x D
         self.nt_emb = nn.Parameter(
-            torch.randn(self.num_all_cats, state_dim)
+            torch.randn(self.qall, state_dim)
         )
-        # maps res_cat to arg_cat x {arg_on_L, arg_on_R}
-        self.rule_mlp = nn.Linear(self.num_res_cats, 2*self.num_arg_cats)
-
-        # example of manually seeding weights (for troubleshooting)
-        # note: weight dims are (out_feats, in_feats)
-#        QUASI_INF = 10000000.
-#        fake_weights = torch.full((17, 8), fill_value=-QUASI_INF)
-#        # favor V-aN -> V-aN-bN N
-#        fake_weights[1, 3] = 0.
-#        # favor V -> N V-aN
-#        fake_weights[10, 7] = 0.
-#        self.rule_mlp.weight = nn.Parameter(fake_weights)
-
+        # maps parent cat to arg_cat x {Aa, Ab, Ma, Mb}
+        self.rule_mlp = nn.Linear(self.qall, 4*self.qgen)
         self.root_emb = nn.Parameter(torch.eye(1)).to(self.device)
-        self.root_mlp = nn.Linear(1, self.num_all_cats).to(self.device)
+        self.root_mlp = nn.Linear(1, self.qall).to(self.device)
 
         # decides terminal or nonterminal
         self.split_mlp = nn.Sequential(
@@ -105,263 +58,181 @@ class BasicCGInducer(nn.Module):
 
         self.parser = BatchCKYParser(
             ix2cat=self.ix2cat,
+            ix2cat_gen=self.ix2cat_gen,
             lfunc_ixs=self.lfunc_ixs,
             rfunc_ixs=self.rfunc_ixs,
-            larg_mask=self.larg_mask,
-            rarg_mask=self.rarg_mask,
-            qall=self.num_all_cats,
-            qres=self.num_res_cats,
-            qarg=self.num_arg_cats,
+            #TODO needed?
+            #larg_mask=self.larg_mask,
+            #rarg_mask=self.rarg_mask,
+            qall=self.qall,
+            qgen=self.qgen,
             device=self.device
         )
 
 
-    def init_cats_by_depth(self):
-        cats_by_max_depth, ix2cat, ix2depth = generate_categories_by_depth(
-            self.num_primitives,
-            self.max_func_depth,
-            self.max_arg_depth
-        )
-        all_cats = cats_by_max_depth[self.max_func_depth]
-        # res_cats (result cats) are the categories that can be
-        # a result from a functor applying to its argument.
-        # Since a functor's depth is one greater than the max depth between
-        # its argument and result, the max depth of a result
-        # is self.max_func_depth-1
-        res_cats = cats_by_max_depth[self.max_func_depth-1]
-        # optionally constrain the complexity of argument categories
-        arg_cats = cats_by_max_depth[self.max_arg_depth]
-
-        num_all_cats = len(all_cats)
-        num_res_cats = len(res_cats)
-        num_arg_cats = len(arg_cats)
-
-        # only allow primitive categories to be at the root of the parse
-        # tree
-        can_be_root = torch.full((num_all_cats,), fill_value=-np.inf)
-        for cat in cats_by_max_depth[0]:
-            assert cat.is_primitive()
-            ix = ix2cat.inverse[cat]
-            can_be_root[ix] = 0
-
-        # given an result cat index (i) and an argument cat 
-        # index (j), lfunc_ixs[i, j] gives the functor cat that
-        # takes cat j as a right argument and returns cat i
-        # e.g. for the rule V -> V-bN N:
-        # lfunc_ixs[V, N] = V-bN
-        lfunc_ixs = torch.empty(
-            num_res_cats, num_arg_cats, dtype=torch.int64
-        )
-
-        # same idea but functor appears on the right
-        # e.g. for the rule V -> N V-aN:
-        # rfunc_ixs[V, N] = V-aN
-        rfunc_ixs = torch.empty(
-            num_res_cats, num_arg_cats, dtype=torch.int64
-        )
-
-        for res in res_cats:
-            res_ix = ix2cat.inverse[res]
-            for arg in arg_cats:
-                arg_ix = ix2cat.inverse[arg]
-                # TODO don't hard-code operator
-                lfunc = CGNode("-b", res, arg)
-                lfunc_ix = ix2cat.inverse[lfunc]
-                lfunc_ixs[res_ix, arg_ix] = lfunc_ix
-                rfunc = CGNode("-a", res, arg)
-                rfunc_ix = ix2cat.inverse[rfunc]
-                rfunc_ixs[res_ix, arg_ix] = rfunc_ix
-
-        self.num_all_cats = num_all_cats
-        self.num_res_cats = num_res_cats
-        self.num_arg_cats = num_arg_cats
-        self.ix2cat = ix2cat
-
-        if self.arg_depth_penalty:
-            print("CEC ix2depth: {}".format(ix2depth))
-            #ix2depth_res = torch.Tensor(ix2depth[:num_res_cats])
-            ix2depth_arg = torch.Tensor(ix2depth[:num_arg_cats])
-            # dim: Qres x 2Qarg
-            arg_penalty_mat = -self.arg_depth_penalty \
-                * ix2depth_arg.tile((num_res_cats, 2))
-            #depth_penalty = ix2depth_res[:,None] + ix2depth_arg[None,:]
-            #depth_penalty = -PENALTY_SCALE * depth_penalty
-            # dim: Qres x 2Qarg
-            #depth_penalty = torch.tile(depth_penalty, (1, 2))
-            self.arg_penalty_mat = arg_penalty_mat.to(self.device)
-
-        self.lfunc_ixs = lfunc_ixs.to(self.device)
-        self.rfunc_ixs = rfunc_ixs.to(self.device)
-        self.root_mask = can_be_root.to(self.device)
-        # these masks are for blocking impossible pairs of argument
-        # and result categories -- not needed here
-        self.larg_mask = None
-        self.rarg_mask = None
-
-
-    def init_cats_from_list(self):
-        all_cats, res_cats, arg_cats, ix2cat = read_categories_from_file(
+    def init_cats(self):
+        # arg_cats is needed in init_masks
+        # TODO is res_cats needed?
+        all_cats, gen_cats, arg_cats, _ = read_categories_from_file(
             self.cats_list
         )
 
-        res_arg_cats = res_cats.union(arg_cats)
-
-        num_all_cats = len(all_cats)
-        num_res_cats = len(res_cats)
-        num_arg_cats = len(arg_cats)
-        num_res_arg_cats = len(res_arg_cats)
-
-        # only allow primitive categories to be at the root of the parse
-        # tree
-        can_be_root = torch.full((num_all_cats,), fill_value=-np.inf)
-        for cat in all_cats:
-            if cat.is_primitive():
-                ix = ix2cat.inverse[cat]
-                can_be_root[ix] = 0
+        self.all_cats = sorted(all_cats)
+        self.qall = len(self.all_cats)
+        ix2cat = bidict()
+        for cat in self.all_cats:
+            ix2cat[len(ix2cat)] = cat
+        self.ix2cat = ix2cat
+        self.gen_cats = sorted(gen_cats)
+        self.qgen = len(self.gen_cats)
+        ix2cat_gen = bidict()
+        for cat in self.gen_cats:
+            ix2cat_gen[len(ix2cat_gen)] = cat
+        self.ix2cat_gen = ix2cat_gen
+        self.arg_cats = arg_cats
 
         # given an result cat index (i) and an argument cat 
         # index (j), lfunc_ixs[i, j] gives the functor cat that
         # takes cat j as a right argument and returns cat i
         # e.g. for the rule V -> V-bN N:
         # lfunc_ixs[V, N] = V-bN
-        lfunc_ixs = torch.empty(
-            num_res_arg_cats, num_res_arg_cats, dtype=torch.int64
+        # NOTE: this doesn't cover modifiers. Given a result cat and a
+        # modifier cat, the modifcand cat will be the same as the result cat
+        lfunc_ixs = torch.zeros(
+            self.qall, self.qgen, dtype=torch.int64
         )
 
         # same idea but functor appears on the right
         # e.g. for the rule V -> N V-aN:
         # rfunc_ixs[V, N] = V-aN
-        rfunc_ixs = torch.empty(
-            num_res_arg_cats, num_res_arg_cats, dtype=torch.int64
+        rfunc_ixs = torch.zeros(
+            self.qall, self.qgen, dtype=torch.int64
         )
 
-        # used to block impossible argument-result pairs with arg on left
-        larg_mask = torch.zeros(
-            num_res_arg_cats, num_res_arg_cats, dtype=torch.float32
-        )
-        # used to block impossible argument-result pairs with arg on right
-        rarg_mask = torch.zeros(
-            num_res_arg_cats, num_res_arg_cats, dtype=torch.float32
-        )
-
-        for res in res_arg_cats:
-            res_ix = ix2cat.inverse[res]
-            for arg in res_arg_cats:
-                arg_ix = ix2cat.inverse[arg]
-                # TODO don't hard-code operator
-                lfunc = CGNode("-b", res, arg)
-                if res not in res_cats or arg not in arg_cats \
-                    or lfunc not in all_cats:
-                    rarg_mask[res_ix, arg_ix] = -QUASI_INF
-                    # just a dummy value
-                    lfunc_ixs[res_ix, arg_ix] = 0
+        for par_ix, par in self.ix2cat.items():
+            for gen_ix, gen in self.ix2cat_gen.items():
+                lfunc = CGNode("-b", par, gen)
+                if lfunc in self.ix2cat.inv:
+                    lfunc_ix = self.ix2cat.inv[lfunc]
                 else:
-                    lfunc_ix = ix2cat.inverse[lfunc]
-                    lfunc_ixs[res_ix, arg_ix] = lfunc_ix
-
-                rfunc = CGNode("-a", res, arg)
-                if res not in res_cats or arg not in arg_cats \
-                    or rfunc not in all_cats:
-                    larg_mask[res_ix, arg_ix] = -QUASI_INF
-                    # just a dummy value
-                    rfunc_ixs[res_ix, arg_ix] = 0
+                    # TODO needed?
+                    #rarg_mask[res_ix, arg_ix] = -QUASI_INF
+                    lfunc_ix = 0
+                rfunc = CGNode("-a", par, gen)
+                if rfunc in self.ix2cat.inv:
+                    # TODO needed?
+                    #larg_mask[res_ix, arg_ix] = -QUASI_INF
+                    rfunc_ix = self.ix2cat.inv[rfunc]
                 else:
-                    rfunc_ix = ix2cat.inverse[rfunc]
-                    rfunc_ixs[res_ix, arg_ix] = rfunc_ix
+                    rfunc_ix = 0
+                lfunc_ixs[par_ix, gen_ix] = lfunc_ix
+                rfunc_ixs[par_ix, gen_ix] = rfunc_ix
 
-        self.num_all_cats = num_all_cats
-        # res and arg cats get pooled together
-        self.num_res_cats = num_res_arg_cats
-        self.num_arg_cats = num_res_arg_cats
         self.ix2cat = ix2cat
+        self.ix2cat_gen = ix2cat_gen
         self.lfunc_ixs = lfunc_ixs.to(self.device)
         self.rfunc_ixs = rfunc_ixs.to(self.device)
-        self.larg_mask = larg_mask.to(self.device)
-        self.rarg_mask = rarg_mask.to(self.device)
-        self.root_mask = can_be_root.to(self.device)
+
+
+    def init_masks(self):
+        # lgen_mask and rgen_mask block impossible parent-gen pairs
+        # with the generated child on the left and right respectively
+        # e.g. if 0 is in par_cats and 1 is in gen_cats but 0/1 is not in
+        # all cats, then (0, 1) should be blocked as a parent-gen pair
+        # these only make a difference if categories are read in from
+        # a file, not if they're generated by depth
+        # dim: qall x qgen
+        lfunc_mask = torch.zeros(
+            self.qall, self.qgen, dtype=torch.float32
+        ).to(self.device)
+        # dim: qall x qgen
+        rfunc_mask = torch.zeros(
+            self.qall, self.qgen, dtype=torch.float32
+        ).to(self.device)
+
+        for par_ix, par in self.ix2cat.items():
+            for gen_ix, gen in self.ix2cat_gen.items():
+                if gen not in self.arg_cats:
+                    lfunc_mask[par_ix, gen_ix] = -QUASI_INF
+                    rfunc_mask[par_ix, gen_ix] = -QUASI_INF
+                else:
+                    # TODO don't hard-code operator
+                    lfunc = CGNode("-b", par, gen)
+                    if lfunc not in self.all_cats:
+                        lfunc_mask[par_ix, gen_ix] = -QUASI_INF
+                    rfunc = CGNode("-a", par, gen)
+                    if rfunc not in self.all_cats:
+                        rfunc_mask[par_ix, gen_ix] = -QUASI_INF
+
+        # blocks categories that aren't in form u-av from being
+        # used as modifiers
+        # dim: qgen
+        mod_mask = torch.zeros(
+            self.qgen, dtype=torch.float32
+        ).to(self.device)
+
+        for gen_ix, gen in self.ix2cat_gen.items():
+            if not gen.is_modifier():
+                mod_mask[gen_ix] = -QUASI_INF
+
+        # only allow primitive categories to be at the root of the parse
+        # tree
+        # dim: qall
+        root_mask = torch.full((self.qall,), fill_value=-np.inf).to(self.device)
+        for cat_ix, cat in self.ix2cat.items():
+            if cat.is_primitive():
+                root_mask[cat_ix] = 0
+
+        self.lfunc_mask = lfunc_mask
+        self.rfunc_mask = rfunc_mask
+        self.mod_mask = mod_mask
+        self.root_mask = root_mask
 
         
-    def forward(self, x, eval=False, argmax=False, use_mean=False, indices=None, set_grammar=True, return_ll=True, **kwargs):
+    # TODO clean up arguments
+    def forward(
+            self, x, eval=False, argmax=False, indices=None,
+            set_grammar=True, return_ll=True
+        ):
         # x : batch x n
         if set_grammar:
-            self.emission = None
-
-            fake_emb = self.fake_emb
-            num_all_cats = self.num_all_cats
-            num_res_cats = self.num_res_cats
-            num_arg_cats = self.num_arg_cats
-
-            # dim: Qfunc
-            root_scores = F.log_softmax(
+            # to assign equal probability to all possible root categories
+            #root_probs = F.log_softmax(self.root_mask, dim=0)
+            # dim: qall
+            root_probs = F.log_softmax(
                 self.root_mask+self.root_mlp(self.root_emb).squeeze(), dim=0
             )
-            full_p0 = root_scores
 
+            # dim: qall x 4qgen
+            rule_scores = self.rule_mlp(self.fake_emb)
+            # mask impossible pairs for Aa operation
+            rule_scores[:, :self.qgen] += self.rfunc_mask
+            # mask impossible pairs for Ab operation
+            rule_scores[:, self.qgen:2*self.qgen] += self.lfunc_mask
+            # mask impossible pairs for Ma operation
+            rule_scores[:, 2*self.qgen:3*self.qgen] += self.mod_mask[None, :]
+            # mask impossible pairs for Mb operation
+            rule_scores[:, 3*self.qgen:] += self.mod_mask[None, :]
+            # dim: qres x 4qarg
+            rule_probs = F.log_softmax(rule_scores, dim=1)
 
-            #rule_scores = F.log_softmax(self.rule_mlp(fake_emb)+penalty, dim=1)
-            #rule_scores = F.log_softmax(self.rule_mlp(fake_emb), dim=1)
+            # split_probs[:, 0] gives P(terminal=0 | cat)
+            # split_probs[:, 1] gives P(terminal=1 | cat)
+            # dim: qall x 2
+            split_probs = F.log_softmax(self.split_mlp(self.nt_emb), dim=1)
+            # dim: qall
+            nont_probs = split_probs[:, 0]
 
-            # dim: Qres x 2Qarg
-            mlp_out = self.rule_mlp(fake_emb)
-            if self.arg_depth_penalty:
-                mlp_out += self.arg_penalty_mat
-
-            # penalizes rules that use backward function application
-            # (in practice encourages right-branching structures)
-            if self.left_arg_penalty:
-                larg_penalty = torch.full(
-                    (num_res_cats, num_arg_cats),
-                    -self.left_arg_penalty
-                )
-                rarg_penalty = torch.full((num_res_cats, num_arg_cats), 0)
-                # dim: Qres x 2Qarg
-                penalty = torch.concat(
-                    [larg_penalty, rarg_penalty], dim=1
-                ).to(self.device)
-                mlp_out += penalty
-
-            # dim: Qres x 2Qarg
-            rule_scores = F.log_softmax(mlp_out, dim=1)
-            #rule_scores = F.log_softmax(self.rule_mlp(fake_emb)+self.depth_penalty, dim=1)
-            # dim: Qres x Qarg
-            rule_scores_larg = rule_scores[:, :num_arg_cats]
-            #print("CEC rule scores larg")
-            #print(rule_scores_larg)
-            # dim: Qres x Qarg
-            rule_scores_rarg = rule_scores[:, num_arg_cats:]
-            #print("CEC rule scores rarg")
-            #print(rule_scores_rarg)
-
-
-            nt_emb = self.nt_emb
-            # dim: Qfunc x 2
-            # split_scores[:, 0] gives P(terminal=0 | cat)
-            # split_scores[:, 1] gives P(terminal=1 | cat)
-            #split_scores = F.log_softmax(nn.Dropout()(self.split_mlp(nt_emb)), dim=1)
-            split_scores = F.log_softmax(self.split_mlp(nt_emb), dim=1)
-
-            #full_G_larg = rule_scores_larg + split_scores[:, 0][..., None]
-            #full_G_rarg = rule_scores_rarg + split_scores[:, 0][..., None]
-            # dim: Qres x Qarg
-            full_G_larg = rule_scores_larg \
-                          + split_scores[:num_res_cats, 0][..., None]
-            full_G_rarg = rule_scores_rarg \
-                          + split_scores[:num_res_cats, 0][..., None]
+            # dim: qall x 4qgen
+            full_G = rule_probs + nont_probs[..., None]
 
             self.parser.set_models(
-                full_p0,
-                full_G_larg,
-                full_G_rarg,
-                self.emission,
-                pcfg_split=split_scores
+                root_probs,
+                full_G,
+                split_probs=split_probs
             )
 
-
-        if self.model_type == 'word':
-            x = self.emit_prob_model(x, self.nt_emb, set_grammar=set_grammar)
-        else:
-            assert self.model_type == "char"
-            x = self.emit_prob_model(x, self.nt_emb, set_grammar=set_grammar)
+        x = self.emit_prob_model(x, self.nt_emb, set_grammar=set_grammar)
 
         if argmax:
             printDebug("inducer_x")
