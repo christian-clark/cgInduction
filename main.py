@@ -36,7 +36,7 @@ DEFAULT_CONFIG = {
 }
 
 
-DEBUG = False
+DEBUG = True
 
 def printDebug(*args, **kwargs):
     if DEBUG:
@@ -55,6 +55,7 @@ def random_seed(seed_value, use_cuda):
 
 
 def setup(eval_only=False):
+    printDebug("main: setting up...")
     top_config = ConfigParser()
     top_config.read_dict(DEFAULT_CONFIG)
     if len(sys.argv) == 2:
@@ -75,7 +76,7 @@ def setup(eval_only=False):
     if config.getint("seed") < 0: # random seed if seed is set to negative values
         seed = int(int(time.time()) * random.random())
         config["seed"] = str(seed)
-    printDebug("seed is value {}".format(config.getint("seed")))
+    printDebug("main: seed is value {}".format(config.getint("seed")))
     random_seed(config.getint("seed"), use_cuda=config["device"]=="cuda")
 
     for handler in logging.root.handlers[:]:
@@ -99,6 +100,8 @@ def setup(eval_only=False):
             if os.path.exists(config["model_path"]):
                 shutil.rmtree(config["model_path"])
         os.makedirs(config["model_path"])
+
+    printDebug("main: setup A")
 
     config_file = os.path.join(config["model_path"], "config.ini")
     with open(config_file, 'w') as cf:
@@ -236,14 +239,17 @@ def setup(eval_only=False):
     )
     model = TopModel(parser, writer)
 
+    printDebug("main: setup A0")
     logging.info(str(model))
     num_grammar_params = 0
     for param in model.parameters():
         num_grammar_params += param.numel()
     logging.info("Parser has {} parameters".format(num_grammar_params))
+    printDebug("main: setup A1")
 
     model = model.to(config["device"])
 
+    printDebug("main: setup B")
     # TODO hard-coded to use Adam?
     optimizer = optim.Adam(model.parameters(), lr=config.getfloat("learning_rate"))
 
@@ -263,46 +269,33 @@ def setup(eval_only=False):
         # if doing eval only and checkpoint isn't specified, assume it's
         # model.pth
         checkpoint = torch.load(config["model_path"] + "/model.pth")
+    printDebug("main: setup C")
 
     return config, model, optimizer, valid_sents, valid_trees, valid, train, logfile_fh
 
 
 def train():
     config, model, optimizer, valid_sents, valid_trees, valid, train, logfile_fh = setup(eval_only=False)
+    printDebug("main: done setting up...")
     torch.autograd.set_detect_anomaly(True)
     best_eval_likelihood = -1e+8
     patient = 0
 
     # evaluate the untrained model (written in log as epoch -1)
-    if valid_sents is not None:
-        model.to(config["eval_device"])
-        _, trees = model_use.parse_dataset(model, valid, -1)
-        valid_pred_trees = postprocess.print_trees(
-            trees, valid_sents, -1, config["model_path"]
-        )
-        if valid_trees is not None:
-            eval_access(valid_pred_trees, valid_trees, model.writer, -1)
-        model.to(config["device"])
-        
-#    # evaluate the untrained model (written in log as epoch -1)
-#    if config.getboolean("eval_parsing"):
-#        # evaluate on CPU
+#    if valid_sents is not None:
 #        model.to(config["eval_device"])
-#        total_eval_likelihoods, trees = model_use.parse_dataset(model, valid, -1)
-#
+#        _, trees = model_use.parse_dataset(model, valid, -1)
 #        valid_pred_trees = postprocess.print_trees(
-#            trees, valid_data, -1, config["model_path"]
+#            trees, valid_sents, -1, config["model_path"]
 #        )
-#        if config.getboolean("labeled_eval"):
+#        if valid_trees is not None:
 #            eval_access(valid_pred_trees, valid_trees, model.writer, -1)
-#
-#        # back to GPU for training
 #        model.to(config["device"])
-
+        
+    printDebug("main: starting train loop...")
     for epoch in range(config.getint("start_epoch"), config.getint("max_epoch")):
         optimizer = model_use.train_model(
-            epoch, model, optimizer, train, config.getint("batch_size"),
-            config.getfloat("max_grad_norm")
+            epoch, model, optimizer, train, config.getfloat("max_grad_norm")
         )
 
         if ((epoch - config.getint("eval_start_epoch")) % config.getint("eval_steps") == 0 \
@@ -311,7 +304,7 @@ def train():
 
             logging.info("EVALING.")
 
-            if valid_sents is not None:
+            if valid_sents:
                 model.to(config["eval_device"])
                 total_eval_likelihoods, trees = model_use.parse_dataset(model, valid, epoch)
                 valid_pred_trees = postprocess.print_trees(
@@ -321,24 +314,8 @@ def train():
                     eval_access(valid_pred_trees, valid_trees, model.writer, -1)
                 model.to(config["device"])
 
-#            if config.getboolean("eval_parsing"):
-#                # evaluate on CPU
-#                model.to(config["eval_device"])
-#
-#                total_eval_likelihoods, trees = model_use.parse_dataset(model, valid, epoch)
-#
-#                valid_pred_trees = postprocess.print_trees(
-#                    trees, valid_data, epoch, config["model_path"]
-#                )
-#
-#                if config.getboolean("labeled_eval"):
-#                    eval_access(valid_pred_trees, valid_trees, model.writer, -1)
-#
-#                # back to GPU for training
-#                model.to(config["device"])
-
             else:
-                total_eval_likelihoods = model_use.likelihood_dataset(model, train, epoch) * (-1)
+                total_eval_likelihoods = model_use.likelihood_dataset(model, train, epoch)
 
             if total_eval_likelihoods > best_eval_likelihood:
                 logging.info("Better model found based on likelihood: {}! vs {}".format(total_eval_likelihoods, best_eval_likelihood))
@@ -423,6 +400,7 @@ def test():
 
 
 if __name__ == "__main__":
+    printDebug("kicking off main script...")
     if len(sys.argv) >= 3 and sys.argv[1] == 'train':
         train()
         logging.shutdown()

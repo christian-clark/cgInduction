@@ -1,7 +1,5 @@
 import torch.nn as nn
-import torch.distributions
 from torch.utils.tensorboard import SummaryWriter
-from treenode import convert_binary_matrix_to_strtree
 
 DEBUG = False
 
@@ -18,59 +16,24 @@ class TopModel(nn.Module):
         self.writer = writer
 
 
-    def forward(self, word_inp, chars_var_inp, distance_penalty_weight=0.):
-        if self.inducer.model_type == "char":
-            logprob_list = self.inducer.forward(chars_var_inp, words=word_inp)
-        else:
-            assert self.inducer.model_type == 'word'
-            logprob_list = self.inducer.forward(word_inp)
+    def forward(self, word_inp):
+        loss = self.inducer.forward(word_inp)
+        return loss.sum()
 
-        total_num_chars = sum(
-            [sum([x.numel() for x in y]) for y in chars_var_inp]
+
+    def parse(self, word_inp, set_grammar=True):
+        loss, vtree_list = self.inducer.forward(
+            word_inp,
+            argmax=True,
+            set_grammar=set_grammar
         )
-        structure_loss = torch.sum(logprob_list, dim=0)
-
-        total_loss = structure_loss
-        return total_loss
+        return loss.sum().item(), vtree_list
 
 
-    def parse(self, word_inp, chars_var_inp, indices, eval=False, set_grammar=True):
-        if self.inducer.model_type == 'char':
-            structure_loss, vtree_list, _, _ = self.inducer.forward(
-                chars_var_inp,
-                eval,
-                argmax=True,
-                indices=indices,
-                set_grammar=set_grammar
-            )
-        else:
-            assert self.inducer.model_type == 'word'
-            printDebug("word input: {}".format(word_inp))
-            structure_loss, vtree_list, _, _ = self.inducer.forward(
-                word_inp,
-                eval,
-                argmax=True,
-                indices=indices,
-                set_grammar=set_grammar
-            )
-        return structure_loss.sum().item(), vtree_list
-
-
-    def likelihood(self, word_inp, chars_var_inp, indices, set_grammar=True):
-        if self.inducer.model_type == 'char':
-            structure_loss = self.inducer.forward(
-                chars_var_inp,
-                argmax=False,
-                indices=indices,
-                set_grammar=set_grammar
-            )
-        else:
-            assert self.inducer.model_type == 'word'
-            structure_loss = self.inducer.forward(
-                word_inp,
-                argmax=False,
-                indices=indices,
-                set_grammar=set_grammar
-            )
-        return structure_loss.sum().item()
+    def likelihood(self, word_inp, set_grammar=True):
+        loss = self.inducer.forward(
+            word_inp,
+            set_grammar=set_grammar
+        )
+        return loss.sum().item()
 

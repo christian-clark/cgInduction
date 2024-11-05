@@ -27,7 +27,6 @@ class BatchCKYParser:
         self.qall = qall
         self.qgen = qgen
         self.curr_sent_len = -1
-        self.counter = 0
         self.vocab_prob_list = []
         self.finished_vocab = set()
         if torch.cuda.is_available() and device == 'cuda':
@@ -46,44 +45,33 @@ class BatchCKYParser:
         self.log_lexis = None
 
 
-    def marginal(self, sents, viterbi_flag=False, only_viterbi=False, sent_indices=None):
-        self.sent_indices = sent_indices
-
-        if not only_viterbi:
-            self.compute_inside_logspace(sents)
-            # nodes_list, logprob_list = self.sample_tree(sents)
-            # nodes_list, logprob_list = self.sample_tree_logspace(sents)
-            logprob_list = self.marginal_likelihood_logspace()
-        else:
-            logprob_list = []
-        self.viterbi_sent_indices = self.sent_indices
-        self.sent_indices = None
+    def marginal(self, sents, viterbi_flag=False, return_charts=False):
+        self.compute_inside_logspace(sents)
+        # nodes_list, logprob_list = self.sample_tree(sents)
+        # nodes_list, logprob_list = self.sample_tree_logspace(sents)
+        logprob_list = self.marginal_likelihood_logspace()
         if viterbi_flag:
             with torch.no_grad():
                 vnodes = []
                 for sent_index, sent in enumerate(sents):
                     sent = sent.unsqueeze(0)
-                    self.sent_indices = [self.viterbi_sent_indices[sent_index],]
                     backchart = self.compute_viterbi_inside(sent)
                     this_vnodes = self.viterbi_backtrack(backchart)
                     vnodes += this_vnodes
 
         self.curr_sent_len = -1
-
-        vtree_list, vproduction_counter_dict_list, vlr_branches_list = [], [], []
+        vtree_list = list()
 
         if viterbi_flag:
             for sent_index, sent in enumerate(sents):
-                vthis_tree, vproduction_counter_dict, vlr_branches = nodes_to_tree(vnodes[sent_index], sent)
+                vthis_tree, _, _ = nodes_to_tree(vnodes[sent_index], sent)
                 vtree_list.append(vthis_tree)
-                vproduction_counter_dict_list.append(vproduction_counter_dict)
-                vlr_branches_list.append(vlr_branches)
         else:
-            vtree_list, vproduction_counter_dict_list, vlr_branches_list = [None]*len(sents), [None]*len(sents), \
-                                                                 [None]*len(sents)
-
-        self.counter+=1
-        return logprob_list, vtree_list, vproduction_counter_dict_list, vlr_branches_list
+            vtree_list = [None]*len(sents)
+        if return_charts:
+            return logprob_list, vtree_list, self.left_chart, self.right_chart
+        else:
+            return logprob_list, vtree_list
 
 
     def compute_inside_logspace(self, sents):

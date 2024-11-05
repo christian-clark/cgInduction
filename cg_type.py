@@ -25,6 +25,15 @@ class CGNode:
     def is_primitive(self):
         return self.res_arg is None
 
+    def get_depth(self):
+        """Get the argument depth, that is, the number of arguments
+        that the category needs to combine with before only a primitive
+        is left."""
+        if self.is_primitive():
+            return 0
+        else:
+            return 1 + self.res_arg[1].get_depth()
+
     def is_modifier(self):
         # u-av categories can be modifiers
         if self.is_primitive(): return False

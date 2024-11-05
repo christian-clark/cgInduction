@@ -1,4 +1,3 @@
-import random
 import torch
 import time
 import logging
@@ -12,66 +11,32 @@ def printDebug(*args, **kwargs):
         print(*args, **kwargs)
 
 
-def slice_tensor(tensor, batch_size, flatten=False):
-    if tensor is None:
-        return tensor
-    return list([tensor[i:i+batch_size].flatten() if flatten else tensor[i:i+batch_size]
-                 for i in range(0, tensor.shape[0], batch_size)])
-
-
 def train_model(
-        epoch, model, optimizer, train, batch_size, max_grad_norm
+        epoch, model, optimizer, train, max_grad_norm
     ):
     """
     Training model for one epoch
     """
     torch.autograd.set_detect_anomaly(True)
     model.train()
-
-    slicing_flag = False
-
-    total_loss, total_tag, total_chars, total_acc_chars = 1e-7, 1e-7, 1e-7, 1e-7
-
+    total_loss, total_tag = 1e-7, 1e-7
     cnt = 0
     start_time = time.time()
-
-    train_w, train_c, train_var_c, train_lens, train_masks, train_indices = train
+    train_w, _, _, train_lens, _, _ = train
     max_cnt = len(train_w)
     tenths = list([int(max_cnt / 10) * i for i in range(1, 10)])
-
+    # TODO what does lst accomplish?
     lst = list(range(len(train_w)))
-
     train_w = [train_w[l] for l in lst]
-    train_c = [train_c[l] for l in lst]
-    train_var_c = [train_var_c[l] for l in lst]
     train_lens = [train_lens[l] for l in lst]
-    train_masks = [train_masks[l] for l in lst]
-    train_indices = [train_indices[l] for l in lst]
 
-    for w, c, var_c, lens, masks, indices in zip(train_w, train_c, train_var_c, train_lens, train_masks, train_indices):
+    for ws, lens in zip(train_w, train_lens):
         cnt += 1
         optimizer.zero_grad()
 
-        if slicing_flag:
-            ws, cs = slice_tensor(w, batch_size), slice_tensor(c, batch_size)
-            if cs is None:
-                cs = [None] * len(ws)
-            sliced_masks = []
-            sliced_masks.append(slice_tensor(masks[0], batch_size))
-            master_mask = torch.arange(batch_size * w.shape[1], device=w.device).reshape(batch_size, -1)
-            fw_mask = master_mask[:, :-1]
-            bw_mask = master_mask[:, 1:]
-            sliced_masks.append([fw_mask[:wss.shape[0]].flatten() for wss in ws])
-            sliced_masks.append([bw_mask[:wss.shape[0]].flatten() for wss in ws])
-            sliced_masks = zip(*sliced_masks)
-
-        else:
-            ws, cs, var_cs, sliced_masks = (w,), (c,), (var_c,), (masks,)
-
-        for ww, cc, varcc, mm in zip(ws, cs, var_cs, sliced_masks):
-            loss = model.forward(ww, varcc)
-            loss.backward()
-            total_loss += loss.item()
+        loss = model.forward(ws)
+        loss.backward()
+        total_loss += loss.item()
 
         total_tag += sum(lens)
 
@@ -91,26 +56,23 @@ def train_model(
             model.writer.add_scalar('train_accumulative/average_total_loss', total_loss / total_tag, global_step)
 
     model.writer.add_scalar('train_epochwise/average_total_loss', total_loss / total_tag, epoch)
-
     return optimizer
+
 
 def parse_dataset(model, dataset, epoch, section='dev'):
     model.eval()
     with torch.no_grad():
-        train_w, train_c, train_var_c, train_lens, train_masks, train_indices = dataset
+        train_w, _, _, train_lens, _, train_indices = dataset
         trees = [None] * sum([len(x) for x in train_indices])
         total_structure_loss = 0
         total_num_tags = sum([sum(x) for x in train_lens])
-        for batch_index, (w, c, var_c, lens, masks, indices) in enumerate(zip(train_w, train_c, train_var_c, train_lens,
-                                                                              train_masks, train_indices)):
+        for batch_index, (w, indices) in enumerate(zip(train_w, train_indices)):
             if batch_index == 0:
-                structure_loss, v_treelist = model.parse(w, var_c, indices, set_grammar=True)
+                structure_loss, v_treelist = model.parse(w, set_grammar=True)
             else:
-                structure_loss, v_treelist = model.parse(w, var_c, indices, set_grammar=False)
-
+                structure_loss, v_treelist = model.parse(w, set_grammar=False)
             for t_id, t in zip(indices, v_treelist):
                 trees[t_id] = t
-
             total_structure_loss += structure_loss
         if model.writer is not None:
             model.writer.add_scalar(section+'_epochwise/average_structure_loss', total_structure_loss / total_num_tags, epoch)
@@ -123,23 +85,21 @@ def parse_dataset(model, dataset, epoch, section='dev'):
 def likelihood_dataset(model, dataset, epoch, section='dev'):
     model.eval()
     with torch.no_grad():
-        train_w, train_c, train_var_c, train_lens, train_masks, train_indices = dataset
+        train_w, _, _, train_lens, _, _ = dataset
         total_structure_loss = 0
         total_num_tags = sum([sum(x) for x in train_lens])
-        for batch_index, (w, c, var_c, lens, masks, indices) in enumerate(zip(train_w, train_c, train_var_c, train_lens,
-                                                                              train_masks, train_indices)):
+        for batch_index, w in enumerate(train_w):
             if batch_index == 0:
-                structure_loss = model.likelihood(w, var_c, indices, set_grammar=True)
+                structure_loss = model.likelihood(w, set_grammar=True)
             else:
-                structure_loss = model.likelihood(w, var_c, indices, set_grammar=False)
-
+                structure_loss = model.likelihood(w, set_grammar=False)
             total_structure_loss += structure_loss
-
         model.writer.add_scalar(section+'_epochwise/average_structure_loss', total_structure_loss / total_num_tags, epoch)
         logging.info(
             'Epoch {} EVALUATION | Structure loss {:.4f} '.format(epoch, total_structure_loss))
     model.train()
     return total_structure_loss
+
 
 def eval_model(model, valid):
     model.eval()

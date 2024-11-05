@@ -1,11 +1,11 @@
-import bidict, numpy as np, torch, torch.nn.functional as F
+import bidict, csv, numpy as np, torch, torch.nn.functional as F
 from torch import nn
 from cky_parser_sgd import BatchCKYParser
 from char_coding_models import ResidualLayer, WordProbFCFixVocabCompound
 from cg_type import CGNode, read_categories_from_file
 
 QUASI_INF = 10000000.
-DEBUG = False
+DEBUG = True
 
 def printDebug(*args, **kwargs):
     if DEBUG:
@@ -19,7 +19,10 @@ class BasicCGInducer(nn.Module):
         self.state_dim = config.getint("state_dim")
         self.model_type = config["model_type"]
         self.device = config["device"]
-        self.eval_device = config["eval_device"]
+
+        self.init_cooccurrences(config)
+        self.word_emb = nn.Embedding(num_words, self.num_preds)
+        printDebug("cooc:", self.cooc)
 
         # note: this model only supports a word-level model
         # jin et al define a character model that performs better but is
@@ -56,18 +59,34 @@ class BasicCGInducer(nn.Module):
             nn.Linear(state_dim, 2)
         ).to(self.device)
 
+        printDebug("ix2cat:", self.ix2cat)
+        printDebug("ix2cat_gen:", self.ix2cat_gen)
+
         self.parser = BatchCKYParser(
             ix2cat=self.ix2cat,
             ix2cat_gen=self.ix2cat_gen,
             lfunc_ixs=self.lfunc_ixs,
             rfunc_ixs=self.rfunc_ixs,
-            #TODO needed?
-            #larg_mask=self.larg_mask,
-            #rarg_mask=self.rarg_mask,
             qall=self.qall,
             qgen=self.qgen,
             device=self.device
         )
+
+        self.sample_count = config.getint("sample_count")
+
+    def init_cooccurrences(self, config):
+        cooc = list()
+        dir = config["cooccurrence_scores_dir"]
+        for op in ["argument1", "argument2", "modifier"]:
+            op_scores = list()
+            for row in csv.reader(open(dir + '/' + op)):
+                scores = [float(s) for s in row]
+                op_scores.append(scores)
+            cooc.append(op_scores)
+        # shape after permuute: pred x pred x op
+        cooc = torch.Tensor(cooc).permute((1, 2, 0))
+        self.num_preds = cooc.shape[0]
+        self.cooc = cooc
 
 
     def init_cats(self):
@@ -86,9 +105,14 @@ class BasicCGInducer(nn.Module):
         self.gen_cats = sorted(gen_cats)
         self.qgen = len(self.gen_cats)
         ix2cat_gen = bidict.bidict()
+        genix2allix = list()
         for cat in self.gen_cats:
+            allix = self.ix2cat.inv[cat]
             ix2cat_gen[len(ix2cat_gen)] = cat
+            genix2allix.append(allix)
         self.ix2cat_gen = ix2cat_gen
+        # dim: qgen
+        self.genix2allix = torch.tensor(genix2allix).to(self.device)
         self.arg_cats = arg_cats
 
         # given an result cat index (i) and an argument cat 
@@ -115,13 +139,9 @@ class BasicCGInducer(nn.Module):
                 if lfunc in self.ix2cat.inv:
                     lfunc_ix = self.ix2cat.inv[lfunc]
                 else:
-                    # TODO needed?
-                    #rarg_mask[res_ix, arg_ix] = -QUASI_INF
                     lfunc_ix = 0
                 rfunc = CGNode("-a", par, gen)
                 if rfunc in self.ix2cat.inv:
-                    # TODO needed?
-                    #larg_mask[res_ix, arg_ix] = -QUASI_INF
                     rfunc_ix = self.ix2cat.inv[rfunc]
                 else:
                     rfunc_ix = 0
@@ -189,10 +209,8 @@ class BasicCGInducer(nn.Module):
         self.root_mask = root_mask
 
         
-    # TODO clean up arguments
     def forward(
-            self, x, eval=False, argmax=False, indices=None,
-            set_grammar=True, return_ll=True
+            self, x, argmax=False, set_grammar=True,
         ):
         # x : batch x n
         if set_grammar:
@@ -226,6 +244,7 @@ class BasicCGInducer(nn.Module):
             # dim: qall x 4qgen
             full_G = rule_probs + nont_probs[..., None]
 
+            self.root_probs = root_probs
             self.parser.set_models(
                 root_probs,
                 full_G,
@@ -235,19 +254,360 @@ class BasicCGInducer(nn.Module):
         x = self.emit_prob_model(x, self.nt_emb, set_grammar=set_grammar)
 
         if argmax:
-            printDebug("inducer_x")
-            printDebug(x.flatten()[:20])
-            if eval and self.device != self.eval_device:
-                print("Moving model to {}".format(self.eval_device))
-                self.parser.device = self.eval_device
             with torch.no_grad():
-                logprob_list, vtree_list, vproduction_counter_dict_list, vlr_branches_list = \
-                    self.parser.marginal(x, viterbi_flag=True, only_viterbi=not return_ll, sent_indices=indices)
-            if eval and self.device != self.eval_device:
-                self.parser.device = self.device
-                print("Moving model back to {}".format(self.device))
-            return logprob_list, vtree_list, vproduction_counter_dict_list, vlr_branches_list
+                logprob_list, vtree_list = \
+                    self.parser.marginal(x, viterbi_flag=True)
+            # TODO get pred score for viterbi tree
+            return logprob_list, vtree_list
         else:
-            logprob_list, _, _, _ = self.parser.marginal(x)
-            logprob_list = logprob_list * (-1)
-            return logprob_list
+            logprob_list, _, left_chart, right_chart = self.parser.marginal(x, return_charts=True)
+            printDebug("sampling from chart next...")
+            sampled_trees, tree_logprobs = self.sample_from_chart(left_chart, right_chart)
+            printDebug("sampled trees:", sampled_trees)
+            printDebug("sampled tree logprobs", tree_logprobs)
+            #biased_logprob_list = self.get_biased_logprobs(sampled_trees, tree_logprobs)
+            biased_logprob_list = logprob_list
+            return biased_logprob_list
+
+
+    def sample_from_chart(self, left_chart, right_chart):
+        # left and right chart dim: sentlen x sentlen x batch x qall
+        sent_len = left_chart.shape[0]
+        batch_size = left_chart.shape[2]
+        # dim: qall x 4qgen
+        # TODO maybe logsumexp later instead of exp now
+        full_G = self.parser.full_G
+
+        # gen_ixs[ix] gives the index for category
+        # ix2cat_gen[ix] within ix2cat
+        # dim: qgen
+        gen_ixs = torch.full((self.qgen,), -1)
+        for ix, cat in self.ix2cat_gen.items():
+            allix = self.ix2cat.inv[cat]
+            gen_ixs[ix] = allix
+
+        all_sent_samples = list()
+        all_sent_logliks = list()
+        for sent in range(batch_size):
+            sent_samples = list()
+            sent_logliks = list()
+            # dim: sentlen x sentlen x qall
+            curr_lc = left_chart[..., sent, :]
+            sent_len = curr_lc.shape[0]
+            printDebug("\nsent index {}, len {}".format(sent, sent_len))
+            # dim: sentlen x sentlen x qall
+            curr_rc = right_chart[..., sent, :].flip(dims=[0])
+            for sample in range(self.sample_count):
+                printDebug("\tsample index:", sample)
+                # queue containing (category, start, end) for constituents
+                # that need to be split up further
+                q = list()
+                # list of split points that can be used to rebuild the tree
+                # bottom-up for scoring
+                splits = list()
+                # sample root from bottom left cell of curr_lc
+                # dim: qall
+                root_dist = curr_lc[-1, 0] + self.root_probs
+                # dim: qall
+                root_dist = root_dist.exp()
+                # dim: 1
+                root = torch.multinomial(root_dist, num_samples=1)
+                # dim: 1
+                # clone is needed to not overwrite the left chart
+                loglik = curr_lc[-1, 0, root.item()].clone()
+                # dim: 1 x 4qgen
+                curr_G = full_G[root]
+                # dim: sentlen-1 x 4qgen
+                curr_G = curr_G.expand(sent_len-1, -1)
+                # prob of root cat expanding to gen cat via Aa operation
+                # left child is gen cat; right child is implicit
+                # dim: sentlen-1 x qgen
+                curr_G_Aa = curr_G[:, :self.qgen]
+                # dim: sentlen-1 x qgen
+                curr_G_Ab = curr_G[:, self.qgen:2*self.qgen]
+                # dim: sentlen-1 x qgen
+                curr_G_Ma = curr_G[:, 2*self.qgen:3*self.qgen]
+                # dim: sentlen-1 x qgen
+                curr_G_Mb = curr_G[:, 3*self.qgen:]
+                
+                # dim: sent_len-1 x qgen
+                curr_gen_ixs = gen_ixs.expand(sent_len-1, -1).to(self.device)
+
+                # dim: sentlen-1 x qall
+                lc_scores = curr_lc[:-1, 0]
+                # dim: sentlen-1 x qall
+                rc_scores = curr_rc[1:, -1]
+
+                # dim: qgen
+                # for generated right argument i, lfunc_ixs[i] is the index
+                # of the functor category on the left, when root is the
+                # result
+                lfunc_ixs_curr = self.lfunc_ixs[root]
+                # dim: sent_len-1 x qgen
+                lfunc_ixs_curr = lfunc_ixs_curr.expand(sent_len-1, -1)
+
+                # dim: sentlen-1 x qgen
+                lc_scores_Aa = torch.gather(lc_scores, dim=1, index=curr_gen_ixs)
+                # dim: sentlen-1 x qgen
+                lc_scores_Ab = torch.gather(lc_scores, dim=1, index=lfunc_ixs_curr)
+                # dim: sentlen-1 x qgen
+                lc_scores_Ma = torch.gather(lc_scores, dim=1, index=curr_gen_ixs)
+                # dim: sentlen-1 x 1
+                # left child inherits parent's category
+                lc_scores_Mb = lc_scores[:, root].expand(-1, self.qgen)
+
+                # dim: qgen
+                # for generated left argument i, rfunc_ixs[i] is the index
+                # of the functor category on the right, when root is the
+                # result
+                rfunc_ixs_curr = self.rfunc_ixs[root]
+                # dim: sent_len-1 x qgen
+                rfunc_ixs_curr = rfunc_ixs_curr.expand(sent_len-1, -1)
+                # dim: sent_len-1 x qgen
+                rc_scores_Aa = torch.gather(rc_scores, dim=1, index=rfunc_ixs_curr)
+                # dim: sent_len-1 x qgen
+                rc_scores_Ab = torch.gather(rc_scores, dim=1, index=curr_gen_ixs)
+                # dim: sentlen-1 x qgen
+                # right child inherits parent's category
+                rc_scores_Ma = rc_scores[:, root].expand(-1, self.qgen)
+                # dim: sent_len-1 x qgen
+                rc_scores_Mb = torch.gather(rc_scores, dim=1, index=curr_gen_ixs)
+
+                # dim: sent_len-1 x qgen
+                combined_scores_Aa = sum([curr_G_Aa, lc_scores_Aa, rc_scores_Aa])
+                # dim: sent_len-1 x qgen
+                combined_scores_Ab = sum([curr_G_Ab, lc_scores_Ab, rc_scores_Ab])
+                # dim: sent_len-1 x qgen
+                combined_scores_Ma = sum([curr_G_Ma, lc_scores_Ma, rc_scores_Ma])
+                # dim: sent_len-1 x qgen
+                combined_scores_Mb = sum([curr_G_Mb, lc_scores_Mb, rc_scores_Mb])
+                # dim: 4 x sent_len-1 x qgen
+                stacked_all = torch.stack([
+                    combined_scores_Aa,
+                    combined_scores_Ab,
+                    combined_scores_Ma,
+                    combined_scores_Mb
+                ])
+                # dim: sentlen-1
+                combined_all = stacked_all.logsumexp(dim=0).logsumexp(dim=1)
+                # dim: sentlen-1
+                split_point_weights = combined_all.exp()
+
+                # sample split point
+                split_point = torch.multinomial(split_point_weights, num_samples=1)
+
+
+                # dim: 4 x qgen
+                # scores of all (qgen, op) options after split point is fixed
+                scores_after_split = stacked_all[:, split_point, :].squeeze(dim=1)
+                # dim: 4qgen
+                scores_after_split = scores_after_split.reshape(4*self.qgen).exp()
+                op_and_gencat = torch.multinomial(scores_after_split, num_samples=1)
+                
+                op = torch.div(op_and_gencat, self.qgen, rounding_mode="floor")
+                #op = torch.div(op_and_gencat, self.qgen, rounding_mode="floor").item()
+                gencat = op_and_gencat % self.qgen
+                #gencat = (op_and_gencat % self.qgen).item()
+                # change gencat to index within the set of all categories,
+                # instead of iundex within the set of possible generated
+                # categories
+                gencat_allix = self.genix2allix[gencat]
+
+                # dim: qgen
+                rfunc_ixs_curr = self.rfunc_ixs[root].squeeze(dim=0)
+                # dim: qgen
+                lfunc_ixs_curr = self.lfunc_ixs[root].squeeze(dim=0)
+                # dim: qgen
+                root_repeated = root.repeat(self.qgen)
+                # dim: 4 x qgen
+                all_impcats = torch.stack([
+                    rfunc_ixs_curr,
+                    lfunc_ixs_curr,
+                    root_repeated,
+                    root_repeated
+                ])
+                impcat = all_impcats[op, gencat]
+                # Aa or Ma
+                if op % 2 == 0:
+                    lcat = gencat_allix
+                    rcat = impcat
+                # Ab or Mb
+                else:
+                    lcat = impcat
+                    rcat = gencat_allix
+
+                # for Aa or Ab, need to keep track of how deep the implicit
+                # functor category is. This determines which cooccurrence 
+                # matrix is used
+                if op < 2:
+                    functor_depth = self.ix2cat[impcat.item()].get_depth()
+                else:
+                    functor_depth = -1
+                
+                lcat_start = 0
+                lcat_end = split_point.item() + 1
+                rcat_start = split_point.item() + 1
+                rcat_end = sent_len
+
+                printDebug("gencat:", self.ix2cat[gencat_allix.item()])
+                printDebug("implicit cat:", self.ix2cat[impcat.item()])
+
+                printDebug("functor depth:", functor_depth)
+                printDebug("operation:", op.item())
+                splits.append((op.item(), functor_depth, split_point.item() + 1))
+
+                #printDebug("adding to q: {} - {}".format(lcat_start, lcat_end))
+                #printDebug("adding to q: {} - {}".format(rcat_start, rcat_end))
+                q.append((lcat, lcat_start, lcat_end))
+                q.append((rcat, rcat_start, rcat_end))
+                # then sample left child cat, right child cat
+                # - add (cat, start, end) to q for L and R children
+                while len(q) > 0:
+                    #printDebug("q length before pop:", len(q))
+                    curr_cat, curr_start, curr_end = q.pop(0)
+                    #printDebug("curr constituent range: {} - {}".format(curr_start, curr_end))
+                    # leaf node: no further branching needed
+                    if curr_start + 1 == curr_end:
+                        #printDebug("word reached, not splitting further")
+                        continue
+                    ijdiff = curr_end - curr_start
+
+                    # TODO update dims to ijdiff-1 instead of sent_len-1
+                    # dim: 1 x 4qgen
+                    curr_G = full_G[curr_cat]
+                    # dim: sentlen-1 x 4qgen
+                    curr_G = curr_G.expand(ijdiff-1, -1)
+                    # prob of root cat expanding to gen cat via Aa operation
+                    # left child is gen cat; right child is implicit
+                    # dim: sentlen-1 x qgen
+                    curr_G_Aa = curr_G[:, :self.qgen]
+                    # dim: sentlen-1 x qgen
+                    curr_G_Ab = curr_G[:, self.qgen:2*self.qgen]
+                    # dim: sentlen-1 x qgen
+                    curr_G_Ma = curr_G[:, 2*self.qgen:3*self.qgen]
+                    # dim: sentlen-1 x qgen
+                    curr_G_Mb = curr_G[:, 3*self.qgen:]
+
+                    # dim: ijdiff-1 x qgen
+                    curr_gen_ixs = gen_ixs.expand(ijdiff-1, -1).to(self.device)
+
+                    # dim: ijdiff-1 x qgen
+                    lc_scores = curr_lc[:ijdiff-1, curr_start]
+                    # dim: ijdiff-1 x qgen
+                    rc_scores = curr_rc[-(ijdiff-1):, curr_end-1]
+                    # dim: ijdiff-1 x qgen
+                    lfunc_ixs_curr = self.lfunc_ixs[curr_cat].expand(ijdiff-1, -1)
+
+                    # dim: sentlen-1 x qgen
+                    lc_scores_Aa = torch.gather(lc_scores, dim=1, index=curr_gen_ixs)
+                    # dim: sentlen-1 x qgen
+                    lc_scores_Ab = torch.gather(lc_scores, dim=1, index=lfunc_ixs_curr)
+                    # dim: sentlen-1 x qgen
+                    lc_scores_Ma = torch.gather(lc_scores, dim=1, index=curr_gen_ixs)
+                    # dim: sentlen-1 x 1
+                    # left child inherits parent's category
+                    lc_scores_Mb = lc_scores[:, root].expand(-1, self.qgen)
+
+                    # dim: qgen
+                    rfunc_ixs_curr = self.rfunc_ixs[root]
+                    # dim: sent_len-1 x qgen
+                    rfunc_ixs_curr = rfunc_ixs_curr.expand(ijdiff-1, -1)
+                    # dim: sent_len-1 x qgen
+                    rc_scores_Aa = torch.gather(rc_scores, dim=1, index=rfunc_ixs_curr)
+                    # dim: sent_len-1 x qgen
+                    rc_scores_Ab = torch.gather(rc_scores, dim=1, index=curr_gen_ixs)
+                    # dim: sentlen-1 x qgen
+                    # right child inherits parent's category
+                    rc_scores_Ma = rc_scores[:, root].expand(-1, self.qgen)
+                    # dim: sent_len-1 x qgen
+                    rc_scores_Mb = torch.gather(rc_scores, dim=1, index=curr_gen_ixs)
+
+                    # dim: sent_len-1 x qgen
+                    combined_scores_Aa = sum([curr_G_Aa, lc_scores_Aa, rc_scores_Aa])
+                    # dim: sent_len-1 x qgen
+                    combined_scores_Ab = sum([curr_G_Ab, lc_scores_Ab, rc_scores_Ab])
+                    # dim: sent_len-1 x qgen
+                    combined_scores_Ma = sum([curr_G_Ma, lc_scores_Ma, rc_scores_Ma])
+                    # dim: sent_len-1 x qgen
+                    combined_scores_Mb = sum([curr_G_Mb, lc_scores_Mb, rc_scores_Mb])
+                    # dim: 4 x sent_len-1 x qgen
+                    stacked_all = torch.stack([
+                        combined_scores_Aa,
+                        combined_scores_Ab,
+                        combined_scores_Ma,
+                        combined_scores_Mb
+                    ])
+                    # dim: sentlen-1
+                    combined_all = stacked_all.logsumexp(dim=0).logsumexp(dim=1)
+                    # dim: sentlen-1
+                    split_point_weights = combined_all.exp()
+
+                    # sample split point
+                    split_point = torch.multinomial(split_point_weights, num_samples=1)
+
+                    # dim: 4 x qgen
+                    # scores of all (qgen, op) options after split point is fixed
+                    scores_after_split = stacked_all[:, split_point, :].squeeze(dim=1)
+                    # dim: 4qgen
+                    scores_after_split = scores_after_split.reshape(4*self.qgen)
+                    op_and_gencat = torch.multinomial(scores_after_split.exp(), num_samples=1)
+                    curr_loglik = scores_after_split[op_and_gencat.item()]
+                    loglik += curr_loglik
+                    
+                    op = torch.div(op_and_gencat, self.qgen, rounding_mode="floor")
+                    gencat = op_and_gencat % self.qgen
+                    gencat_allix = self.genix2allix[gencat]
+                    #printDebug("gencat_allix:", gencat_allix)
+
+                    # dim: qgen
+                    rfunc_ixs_curr = self.rfunc_ixs[root].squeeze(dim=0)
+                    # dim: qgen
+                    lfunc_ixs_curr = self.lfunc_ixs[root].squeeze(dim=0)
+                    # TODO fix this -- shouldn't be root category
+                    # dim: qgen
+                    curr_cat_repeated = curr_cat.repeat(self.qgen)
+                    # dim: 4 x qgen
+                    all_impcats = torch.stack([
+                        rfunc_ixs_curr,
+                        lfunc_ixs_curr,
+                        curr_cat_repeated,
+                        curr_cat_repeated
+                    ])
+                    impcat = all_impcats[op, gencat]
+                    # Aa or Ma
+                    if op % 2 == 0:
+                        lcat = gencat_allix
+                        rcat = impcat
+                    else:
+                        lcat = impcat
+                        rcat = gencat_allix
+
+                    if op < 2:
+                        functor_depth = self.ix2cat[impcat.item()].get_depth()
+                    else:
+                        functor_depth = -1
+
+                    lcat_start = curr_start
+                    lcat_end = curr_start + split_point.item() + 1
+                    rcat_start = curr_start + split_point.item() + 1 
+                    rcat_end = curr_end
+                    #printDebug("lcat range: {} - {}".format(lcat_start, lcat_end))
+                    #printDebug("rcat range: {} - {}".format(rcat_start, rcat_end))
+
+                    # lcat_start + split_point.item() + 1 is the location of the
+                    # split point within the entire sentence (instead of within
+                    # the current constituent being split)
+                    splits.append(
+                        (op.item(), functor_depth, lcat_start+split_point.item()+1)
+                    )
+
+                    q.append((lcat, lcat_start, lcat_end))
+                    q.append((rcat, rcat_start, rcat_end))
+                sent_samples.append(splits)
+                sent_logliks.append(loglik)
+            all_sent_samples.append(sent_samples)
+            all_sent_logliks.append(sent_logliks)
+        return all_sent_samples, all_sent_logliks
+    
+    def get_biased_logprobs(self, sampled_trees, tree_logprobs):
+        return None
