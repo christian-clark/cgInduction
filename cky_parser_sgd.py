@@ -3,7 +3,7 @@ from treenode import Node, nodes_to_tree
 
 
 SMALL_NEGATIVE_NUMBER = -1e8
-DEBUG = False
+DEBUG = True
 
 def printDebug(*args, **kwargs):
     if DEBUG:
@@ -237,7 +237,6 @@ class BatchCKYParser:
         self.right_chart[0] = self.left_chart[0]
 
         for ij_diff in range(1, sent_len):
-            printDebug("ij_diff: {}".format(ij_diff))
             imin = 0
             imax = sent_len - ij_diff
             jmin = ij_diff

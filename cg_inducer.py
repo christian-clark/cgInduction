@@ -251,6 +251,8 @@ class BasicCGInducer(nn.Module):
                 split_probs=split_probs
             )
 
+        # drop bos and eos
+        words = x[:, 1:-1]
         x = self.emit_prob_model(x, self.nt_emb, set_grammar=set_grammar)
 
         if argmax:
@@ -260,14 +262,19 @@ class BasicCGInducer(nn.Module):
             # TODO get pred score for viterbi tree
             return logprob_list, vtree_list
         else:
-            logprob_list, _, left_chart, right_chart = self.parser.marginal(x, return_charts=True)
+            # dim of logprob_list: batch_size
+            logprob_list, _, left_chart, right_chart = self.parser.marginal(
+                x, return_charts=True
+            )
             printDebug("sampling from chart next...")
             sampled_trees, tree_logprobs = self.sample_from_chart(left_chart, right_chart)
             printDebug("sampled trees:", sampled_trees)
             printDebug("sampled tree logprobs", tree_logprobs)
-            #biased_logprob_list = self.get_biased_logprobs(sampled_trees, tree_logprobs)
-            biased_logprob_list = logprob_list
-            return biased_logprob_list
+            # dim: batch_size x samples
+            biased_logprobs = self.get_biased_logprobs(words, sampled_trees, tree_logprobs)
+            printDebug("sampled tree logprobs with bias:", biased_logprobs)
+            # sum logprobs over sampled trees for each sentence
+            return biased_logprobs.sum(dim=1)
 
 
     def sample_from_chart(self, left_chart, right_chart):
@@ -449,10 +456,12 @@ class BasicCGInducer(nn.Module):
                 rcat_start = split_point.item() + 1
                 rcat_end = sent_len
 
-                printDebug("gencat:", self.ix2cat[gencat_allix.item()])
-                printDebug("implicit cat:", self.ix2cat[impcat.item()])
+                #printDebug("gencat:", self.ix2cat[gencat_allix.item()])
+                #printDebug("implicit cat:", self.ix2cat[impcat.item()])
 
-                printDebug("functor depth:", functor_depth)
+                printDebug("root cat:", self.ix2cat[root.item()])
+                printDebug("lcat: {}; span: {} - {}".format(self.ix2cat[lcat.item()], lcat_start, lcat_end))
+                printDebug("rcat: {}; span: {} - {}".format(self.ix2cat[rcat.item()], rcat_start, rcat_end))
                 printDebug("operation:", op.item())
                 splits.append((op.item(), functor_depth, split_point.item() + 1))
 
@@ -506,10 +515,10 @@ class BasicCGInducer(nn.Module):
                     lc_scores_Ma = torch.gather(lc_scores, dim=1, index=curr_gen_ixs)
                     # dim: sentlen-1 x 1
                     # left child inherits parent's category
-                    lc_scores_Mb = lc_scores[:, root].expand(-1, self.qgen)
+                    lc_scores_Mb = lc_scores[:, curr_cat].expand(-1, self.qgen)
 
                     # dim: qgen
-                    rfunc_ixs_curr = self.rfunc_ixs[root]
+                    rfunc_ixs_curr = self.rfunc_ixs[curr_cat]
                     # dim: sent_len-1 x qgen
                     rfunc_ixs_curr = rfunc_ixs_curr.expand(ijdiff-1, -1)
                     # dim: sent_len-1 x qgen
@@ -518,7 +527,7 @@ class BasicCGInducer(nn.Module):
                     rc_scores_Ab = torch.gather(rc_scores, dim=1, index=curr_gen_ixs)
                     # dim: sentlen-1 x qgen
                     # right child inherits parent's category
-                    rc_scores_Ma = rc_scores[:, root].expand(-1, self.qgen)
+                    rc_scores_Ma = rc_scores[:, curr_cat].expand(-1, self.qgen)
                     # dim: sent_len-1 x qgen
                     rc_scores_Mb = torch.gather(rc_scores, dim=1, index=curr_gen_ixs)
 
@@ -560,10 +569,9 @@ class BasicCGInducer(nn.Module):
                     #printDebug("gencat_allix:", gencat_allix)
 
                     # dim: qgen
-                    rfunc_ixs_curr = self.rfunc_ixs[root].squeeze(dim=0)
+                    rfunc_ixs_curr = self.rfunc_ixs[curr_cat].squeeze(dim=0)
                     # dim: qgen
-                    lfunc_ixs_curr = self.lfunc_ixs[root].squeeze(dim=0)
-                    # TODO fix this -- shouldn't be root category
+                    lfunc_ixs_curr = self.lfunc_ixs[curr_cat].squeeze(dim=0)
                     # dim: qgen
                     curr_cat_repeated = curr_cat.repeat(self.qgen)
                     # dim: 4 x qgen
@@ -591,6 +599,11 @@ class BasicCGInducer(nn.Module):
                     lcat_end = curr_start + split_point.item() + 1
                     rcat_start = curr_start + split_point.item() + 1 
                     rcat_end = curr_end
+
+                    printDebug("curr cat:", self.ix2cat[curr_cat.item()])
+                    printDebug("lcat: {}; span: {} - {}".format(self.ix2cat[lcat.item()], lcat_start, lcat_end))
+                    printDebug("rcat: {}; span: {} - {}".format(self.ix2cat[rcat.item()], rcat_start, rcat_end))
+                    printDebug("operation:", op.item())
                     #printDebug("lcat range: {} - {}".format(lcat_start, lcat_end))
                     #printDebug("rcat range: {} - {}".format(rcat_start, rcat_end))
 
@@ -607,7 +620,154 @@ class BasicCGInducer(nn.Module):
                 sent_logliks.append(loglik)
             all_sent_samples.append(sent_samples)
             all_sent_logliks.append(sent_logliks)
+        # dim: batch x samples
+        all_sent_logliks = torch.tensor(all_sent_logliks)
         return all_sent_samples, all_sent_logliks
+
+
+    def compose_vectors(
+            self, op, arg, split, curr_vecs, constituent_boundaries, score
+        ):
+        # dim of curr_vecs: sentlen x d
+        # dim of constituent_boundaries: sentlen x 2
+        # TODO multiply with cooc and update curr_vecs, score
+        # the new constituent spans (lconst_lower, rconst_upper)
+        lconst_lower, _ = constituent_boundaries[split-1]
+        _, rconst_upper = constituent_boundaries[split]
+        constituent_boundaries[lconst_lower][0] = lconst_lower
+        constituent_boundaries[lconst_lower][1] = rconst_upper
+        constituent_boundaries[rconst_upper-1][0] = lconst_lower
+        constituent_boundaries[rconst_upper-1][1] = rconst_upper
+        # Aa - preceding argument attachment
+        if op == 0:
+            # dim: d
+            argument = curr_vecs[split-1].clone() #.softmax(dim=0)
+            # dim: d
+            functor = curr_vecs[split].clone() #.softmax(dim=0)
+            if arg == 1:
+                # dim: d x d
+                cooc = self.cooc[..., 0].clone()
+            else:
+                assert arg == 2
+                # dim: d x d
+                cooc = self.cooc[..., 1]
+            prod = torch.matmul(cooc, argument)
+            new_score = torch.matmul(functor, prod)
+            #new_score = functor.matmul(cooc.matmul(argument))
+            # functor's predicate becomes the predicate for the whole
+            # constituent
+            # update predicates at the constituent boundaries
+            curr_vecs[lconst_lower] = functor
+            curr_vecs[rconst_upper-1] = functor
+        # Ab - succeeding argument attachment
+        elif op == 1:
+            # dim: d
+            functor = curr_vecs[split-1].clone() #.softmax(dim=0)
+            # dim: d
+            argument = curr_vecs[split].clone() #.softmax(dim=0)
+            if arg == 1:
+                # dim: d x d
+                cooc = self.cooc[..., 0].clone()
+            else:
+                assert arg == 2
+                # dim: d x d
+                cooc = self.cooc[..., 1]
+            prod = torch.matmul(cooc, argument)
+            new_score = torch.matmul(functor, prod)
+            #new_score = functor.matmul(cooc.matmul(argument))
+            #new_score = functor.matmul(cooc.matmul(argument))
+            curr_vecs[lconst_lower] = functor
+            curr_vecs[rconst_upper-1] = functor
+        # Ma - preceding modifier attachment
+        elif op == 2:
+            assert arg == -1
+            # dim: d
+            modifier = curr_vecs[split-1].clone() #.softmax(dim=0)
+            # dim: d
+            modificand = curr_vecs[split].clone() #.softmax(dim=0)
+            # dim: d x d
+            cooc = self.cooc[..., 2].clone()
+            #prod = cooc.matmul(modificand)
+            printDebug("cooc shape:", cooc.shape)
+            printDebug("modificand shape:", modificand.shape)
+            prod = torch.matmul(cooc, modificand)
+            #new_score = modifier.matmul(prod)
+            new_score = torch.matmul(modifier, prod)
+            #prod = cooc.matmul(modificand)
+            #new_score = modifier.matmul(prod)
+            #new_score = modifier.matmul(cooc.matmul(modificand))
+            curr_vecs[lconst_lower] = modificand
+            curr_vecs[rconst_upper-1] = modificand
+        # Mb - succeeding modifier attachment
+        elif op == 3:
+            assert arg == -1
+            # dim: d
+            modificand = curr_vecs[split-1].clone() #.softmax(dim=0)
+            # dim: d
+            modifier = curr_vecs[split].clone() #.softmax(dim=0)
+            # dim: d x d
+            cooc = self.cooc[..., 2].clone()
+            #prod = cooc.matmul(modificand)
+            printDebug("cooc shape:", cooc.shape)
+            printDebug("modificand shape:", modificand.shape)
+            prod = torch.matmul(cooc, modificand)
+            #new_score = modifier.matmul(prod)
+            new_score = torch.matmul(modifier, prod)
+            #new_score = modifier.matmul(cooc.matmul(modificand))
+            curr_vecs[lconst_lower] = modificand
+            curr_vecs[rconst_upper-1] = modificand
+        printDebug("new score:", new_score)
+        score += new_score
     
-    def get_biased_logprobs(self, sampled_trees, tree_logprobs):
-        return None
+    def get_biased_logprobs(self, words, sampled_trees, tree_logprobs):
+        # elements of sampled trees: batch items
+        # elements of sampled_trees[i]: samples for a single batch item
+        # elements of sampled_trees[i][j]: split decisions for a single
+        # sampled tree
+        printDebug("words shape:", words.shape)
+        # dim of words: batch x sentlen
+        printDebug("words:", words)
+        # dim: batch_size x samples
+        biased_logprobs = tree_logprobs.clone()
+        printDebug("biased_logprobs shape:", biased_logprobs.shape)
+        batchsize = words.shape[0]
+        sentlen = words.shape[1]
+        # dim: batch x sentlen x d
+        all_word_embs = self.word_emb(words)
+        # NOTE: for reasons I don't understand, it is not possible to
+        # softmax all_word_embs in a single line, e.g.
+        # all_word_embs = self.word_emb(words).softmax(dim=0).
+        # Instead we softmax it row by row.
+        # Softmaxing means that each word vector can be interpreted as a
+        # distribution over predicates
+        for i in range(batchsize):
+            curr_word_embs = all_word_embs[i].clone().softmax(dim=0)
+            all_word_embs[i] = curr_word_embs
+        for i, sent in enumerate(sampled_trees):
+            printDebug("sampled tree ix:", i)
+            # dim: sentlen x d
+            word_embs = all_word_embs[i]
+            printDebug("embeddings:", word_embs)
+            for j, sample in enumerate(sent):
+                # dim: sent_len x d
+                curr_vecs = word_embs
+                constituent_boundaries = list([i, i+1] for i in range(sentlen))
+                # dim: sent_len x 2
+                constituent_boundaries = torch.tensor(constituent_boundaries)
+                printDebug("current vecs:", curr_vecs)
+                printDebug("constituent_boundaries:", constituent_boundaries)
+                # reverse the steps to allow building the tree bottom-up
+                # instead of splitting top-down
+                steps = reversed(sample)
+                score = torch.Tensor([0])
+                for op, arg, split in steps:
+                    printDebug("current op, arg, split:", op, arg, split)
+                    self.compose_vectors(
+                        op, arg, split, curr_vecs, constituent_boundaries, score
+                    )
+                    printDebug("current vecs now:", curr_vecs)
+                    printDebug("constituent boundaries now:", constituent_boundaries)
+                printDebug("score after steps:", score)
+                printDebug("biased logprobs i j", biased_logprobs[i, j])
+                biased_logprobs[i, j] += score[0]
+        return biased_logprobs

@@ -179,6 +179,7 @@ def setup(eval_only=False):
             word_lexicon[word] = len(word_lexicon)
 
     logging.info('Vocabulary size: {0}'.format(len(word_lexicon)) + '; Max length: {}'.format(max([len(x) for x in word_lexicon])))
+    logging.info('Vocabulary: {}'.format(word_lexicon))
 
     # Character Lexicon
     char_lexicon = bidict.bidict()
