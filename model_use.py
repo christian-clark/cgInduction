@@ -78,6 +78,7 @@ def parse_dataset(model, dataset, epoch, section='dev'):
             model.writer.add_scalar(section+'_epochwise/average_structure_loss', total_structure_loss / total_num_tags, epoch)
             logging.info(
                 'Epoch {} EVALUATION | Structure loss {:.4f} '.format(epoch, total_structure_loss))
+        printDebug("parse_dataset train_w:", train_w)
     model.train()
     return total_structure_loss, trees
 

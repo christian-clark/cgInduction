@@ -21,6 +21,8 @@ class BasicCGInducer(nn.Module):
         self.device = config["device"]
 
         self.init_cooccurrences(config)
+        printDebug("num words:", num_words)
+        printDebug("num preds:", self.num_preds)
         self.word_emb = nn.Embedding(num_words, self.num_preds)
         printDebug("cooc:", self.cooc)
 
@@ -59,8 +61,8 @@ class BasicCGInducer(nn.Module):
             nn.Linear(state_dim, 2)
         ).to(self.device)
 
-        printDebug("ix2cat:", self.ix2cat)
-        printDebug("ix2cat_gen:", self.ix2cat_gen)
+        #printDebug("ix2cat:", self.ix2cat)
+        #printDebug("ix2cat_gen:", self.ix2cat_gen)
 
         self.parser = BatchCKYParser(
             ix2cat=self.ix2cat,
@@ -266,18 +268,21 @@ class BasicCGInducer(nn.Module):
             logprob_list, _, left_chart, right_chart = self.parser.marginal(
                 x, return_charts=True
             )
-            printDebug("sampling from chart next...")
+            #printDebug("sampling from chart next...")
             sampled_trees, tree_logprobs = self.sample_from_chart(left_chart, right_chart)
-            printDebug("sampled trees:", sampled_trees)
-            printDebug("sampled tree logprobs", tree_logprobs)
+            #printDebug("sampled trees:", sampled_trees)
+            #printDebug("sampled tree logprobs", tree_logprobs)
             # dim: batch_size x samples
             biased_logprobs = self.get_biased_logprobs(words, sampled_trees, tree_logprobs)
-            printDebug("sampled tree logprobs with bias:", biased_logprobs)
+            #printDebug("sampled tree logprobs with bias:", biased_logprobs)
             # sum logprobs over sampled trees for each sentence
-            return biased_logprobs.sum(dim=1)
-
+            # logsumexp over sampled trees will give the log prob of all the 
+            # samples together
+            # dim: batch_size
+            return biased_logprobs.logsumexp(dim=1) * -1
 
     def sample_from_chart(self, left_chart, right_chart):
+        printDebug("sampling...")
         # left and right chart dim: sentlen x sentlen x batch x qall
         sent_len = left_chart.shape[0]
         batch_size = left_chart.shape[2]
@@ -319,6 +324,11 @@ class BasicCGInducer(nn.Module):
                 root_dist = root_dist.exp()
                 # dim: 1
                 root = torch.multinomial(root_dist, num_samples=1)
+                # differentiable alternative to multinomial
+                #root = torch.nn.functional.gumbel_softmax(root_dist, hard=True)
+                # dim: 1
+                #root = root.argmax().unsqueeze(dim=0)
+                #printDebug("root:", root)
                 # dim: 1
                 # clone is needed to not overwrite the left chart
                 loglik = curr_lc[-1, 0, root.item()].clone()
@@ -604,8 +614,6 @@ class BasicCGInducer(nn.Module):
                     printDebug("lcat: {}; span: {} - {}".format(self.ix2cat[lcat.item()], lcat_start, lcat_end))
                     printDebug("rcat: {}; span: {} - {}".format(self.ix2cat[rcat.item()], rcat_start, rcat_end))
                     printDebug("operation:", op.item())
-                    #printDebug("lcat range: {} - {}".format(lcat_start, lcat_end))
-                    #printDebug("rcat range: {} - {}".format(rcat_start, rcat_end))
 
                     # lcat_start + split_point.item() + 1 is the location of the
                     # split point within the entire sentence (instead of within
@@ -630,8 +638,7 @@ class BasicCGInducer(nn.Module):
         ):
         # dim of curr_vecs: sentlen x d
         # dim of constituent_boundaries: sentlen x 2
-        # TODO multiply with cooc and update curr_vecs, score
-        # the new constituent spans (lconst_lower, rconst_upper)
+        # the new constituent span is (lconst_lower, rconst_upper)
         lconst_lower, _ = constituent_boundaries[split-1]
         _, rconst_upper = constituent_boundaries[split]
         constituent_boundaries[lconst_lower][0] = lconst_lower
@@ -688,8 +695,8 @@ class BasicCGInducer(nn.Module):
             # dim: d x d
             cooc = self.cooc[..., 2].clone()
             #prod = cooc.matmul(modificand)
-            printDebug("cooc shape:", cooc.shape)
-            printDebug("modificand shape:", modificand.shape)
+            #printDebug("cooc shape:", cooc.shape)
+            #printDebug("modificand shape:", modificand.shape)
             prod = torch.matmul(cooc, modificand)
             #new_score = modifier.matmul(prod)
             new_score = torch.matmul(modifier, prod)
@@ -708,28 +715,29 @@ class BasicCGInducer(nn.Module):
             # dim: d x d
             cooc = self.cooc[..., 2].clone()
             #prod = cooc.matmul(modificand)
-            printDebug("cooc shape:", cooc.shape)
-            printDebug("modificand shape:", modificand.shape)
+            #printDebug("cooc shape:", cooc.shape)
+            #printDebug("modificand shape:", modificand.shape)
             prod = torch.matmul(cooc, modificand)
             #new_score = modifier.matmul(prod)
             new_score = torch.matmul(modifier, prod)
             #new_score = modifier.matmul(cooc.matmul(modificand))
             curr_vecs[lconst_lower] = modificand
             curr_vecs[rconst_upper-1] = modificand
-        printDebug("new score:", new_score)
+        #printDebug("new score:", new_score)
         score += new_score
     
     def get_biased_logprobs(self, words, sampled_trees, tree_logprobs):
+        printDebug("getting biased logprobs...")
         # elements of sampled trees: batch items
         # elements of sampled_trees[i]: samples for a single batch item
         # elements of sampled_trees[i][j]: split decisions for a single
         # sampled tree
-        printDebug("words shape:", words.shape)
+        #printDebug("words shape:", words.shape)
         # dim of words: batch x sentlen
-        printDebug("words:", words)
+        #printDebug("words:", words)
         # dim: batch_size x samples
         biased_logprobs = tree_logprobs.clone()
-        printDebug("biased_logprobs shape:", biased_logprobs.shape)
+        #printDebug("biased_logprobs shape:", biased_logprobs.shape)
         batchsize = words.shape[0]
         sentlen = words.shape[1]
         # dim: batch x sentlen x d
@@ -740,14 +748,16 @@ class BasicCGInducer(nn.Module):
         # Instead we softmax it row by row.
         # Softmaxing means that each word vector can be interpreted as a
         # distribution over predicates
-        for i in range(batchsize):
-            curr_word_embs = all_word_embs[i].clone().softmax(dim=0)
-            all_word_embs[i] = curr_word_embs
+        for i in range(sentlen):
+            # dim: batch x d
+            curr_word_embs = all_word_embs[:, i].clone().softmax(dim=1)
+            all_word_embs[:, i] = curr_word_embs
+        printDebug("all_word_embs:", all_word_embs)
         for i, sent in enumerate(sampled_trees):
             printDebug("sampled tree ix:", i)
             # dim: sentlen x d
             word_embs = all_word_embs[i]
-            printDebug("embeddings:", word_embs)
+            #printDebug("embeddings:", word_embs)
             for j, sample in enumerate(sent):
                 # dim: sent_len x d
                 curr_vecs = word_embs

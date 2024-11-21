@@ -1,5 +1,5 @@
 #!/bin/bash
-##SBATCH --partition=schuler
+#SBATCH --account=PAS1200
 ##SBATCH --gpus-per-node=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=32
@@ -21,22 +21,21 @@ fi
 
 
 MODEL=sampling/test
-TRAIN=/home/clark.3664/projects/cg_induction/data/childes/adam.20.senttoks
+TRAIN=/users/PAS2157/ceclark/grammar_induction/data/adam.20.senttoks
+DEV_TREES=/users/PAS2157/ceclark/grammar_induction/data/adam.20.senttrees
 DEV=$TRAIN
-DEV_TREES=/home/clark.3664/projects/cg_induction/data/childes/adam.20.senttrees
 MAX_EPOCH=5
 EVAL_STEPS=2
 STATE_DIM=16
 LEARNING_RATE=0.0001
-#CAT_LIST=/home/clark.3664/projects/cg_induction/categories/p_q/no_scores/maxCats500/p0.5_q0.1
-#CAT_LIST=/home/clark.3664/projects/cg_induction/categories/p_q/no_scores/maxCats100/p0.5_q0.1
-CAT_LIST=/home/clark.3664/git/temp2/cgInduction/categories/toy_depth2
+CAT_LIST=/users/PAS2157/ceclark/git/cgInduction/categories/toy_depth2
 SAMPLE_COUNT=3
-COOCCURRENCE_SCORES_DIR=/home/clark.3664/git/temp2/cgInduction/cooccurrences
+COOCCURRENCE_SCORES_DIR=/users/PAS2157/ceclark/git/cgInduction/cooccurrences
+DUMP_GRAMMAR=1
 
 
 #python3 /home/clark.3664/git/cgInduction/main.py train \
-python3 /home/clark.3664/git/temp2/cgInduction/main.py train \
+python3 /users/PAS2157/ceclark/git/cgInduction/main.py train \
     learning_rate=$LEARNING_RATE \
     state_dim=$STATE_DIM \
     max_epoch=$MAX_EPOCH \
@@ -49,6 +48,7 @@ python3 /home/clark.3664/git/temp2/cgInduction/main.py train \
     eval_device=$EVAL_DEVICE \
     sample_count=$SAMPLE_COUNT \
     cooccurrence_scores_dir=$COOCCURRENCE_SCORES_DIR \
+    dump_grammar=$DUMP_GRAMMAR \
     model=$MODEL
 
     #state_dim=64 \
