@@ -1,10 +1,12 @@
-import torch, numpy as np, torch.nn.functional as F
 from bidict import bidict
 from collections import defaultdict
+import csv
+import numpy as np
+import torch
+import torch.nn.functional as F
 from torch import nn
+
 from cky_parser_sgd import BatchCKYParser
-from char_coding_models import CharProbRNN, ResidualLayer, \
-    WordProbFCFixVocabCompound
 from cg_type import CGNode, generate_categories_by_depth, \
     read_categories_from_file, get_category_argument_depths
 
@@ -27,98 +29,128 @@ def readableIx2predCat(ix2predcat, ix2pred, ix2cat):
 
 
 class BasicCGInducer(nn.Module):
-    def __init__(self, config, num_chars, num_words):
+    def __init__(self, config, num_words):
         super(BasicCGInducer, self).__init__()
-        self.state_dim = config.getint("state_dim")
-        self.rnn_hidden_dim = config.getint("rnn_hidden_dim")
-        self.model_type = config["model_type"]
         self.loss_type = config["loss_type"]
         self.device = config["device"]
         self.eval_device = config["eval_device"]
-        if self.model_type == 'char':
-            self.emit_prob_model = CharProbRNN(
-                num_chars,
-                state_dim=self.state_dim,
-                hidden_size=self.rnn_hidden_dim
-            )
-        elif self.model_type == 'word':
-            self.emit_prob_model = WordProbFCFixVocabCompound(
-                num_words, self.state_dim
-            )
-        else:
-            raise ValueError("Model type should be char or word")
         self.num_primitives = config.getint("num_primitives", fallback=None)
         self.max_func_depth = config.getint("max_func_depth", fallback=None)
         self.max_arg_depth = config.getint("max_arg_depth", fallback=None)
         self.cats_list = config.get("category_list", fallback=None)
-#        self.arg_depth_penalty = config.getfloat(
-#            "arg_depth_penalty", fallback=None
-#        )
-        self.left_arg_penalty = config.getfloat(
-            "left_arg_penalty", fallback=None
-        )
 
         self.init_cats()
+        print("CEC cats:", self.all_cats)
+        print("CEC cat arg depths:", self.cat_arg_depths)
+        print("CEC parcat_2_allcat:", self.parcat_2_allcat)
         self.init_predicates(config)
-        self.init_predcats()
-        self.init_association_matrix()
+        print("CEC predicates:", self.predicates)
+        print("CEC ix2pred:", self.ix2pred)
+        print("CEC valences:", self.valences)
+        print("CEC assoc_arg1:", self.assoc_arg1)
+        print("CEC assoc_arg2:", self.assoc_arg2)
+        
+        #self.init_predcats()
+        #self.init_association_matrix()
         self.init_masks()
+        print("CEC larg_mask:", self.larg_mask)
+        print("CEC rarg_mask:", self.rarg_mask)
+        print("CEC root_cat_mask:", self.root_cat_mask)
+        print("CEC pred_valence_mask:", self.pred_valence_mask)
         self.init_functor_lookup_tables()
 
-        # onehot embeddings for predcats
-        self.par_predcat_onehot = nn.Parameter(
-            torch.eye(self.qpar)
-        )
-        # onehot embeddings for cats alone
-        self.par_cat_onehot = nn.Parameter(
-            torch.eye(self.cpar)
-        )
-        state_dim = self.state_dim
-       
-        # embeddings for predicate-category pairs
-        # used to calculate split scores
-        self.all_predcat_emb = nn.Parameter(
-            torch.randn(self.qall, state_dim)
-        )
-        # maps par_cat to gen_cat x {gen_on_L, gen_on_R}
-        self.rule_mlp = nn.Linear(
-            self.cpar,
-            2*self.cgen
-        )
+        # P(ROOT -> c, p)
+        # - only primitive categories can appear at the root
+        # Grammar rules
+        # P(o | c, p)
+        # P(c' | c, o)
+        # P(p' | c, p)
+        # P(c_left | c, o, c') (deterministic)
+        # P(c_right | c, o, c') (deterministic)
+        # P(p_left | p, o, p') (deterministic)
+        # P(p_right | p, o, p') (deterministic)
+        # Lexical rules
+        # P(o=lex | c, p)
+        # P(w | c, p, o=lex)
 
         self.root_emb = nn.Parameter(torch.eye(1)).to(self.device)
-        self.root_mlp = nn.Linear(1, self.qall).to(self.device)
 
-        # gives P(operation | par_predcat)
-        # options for operation: Aa, Ab (preceding and succeeding
-        # argument attachment)
-        # TODO add Ma and Mb (change 2 to 4)
-        self.operation_mlp = nn.Linear(
-            self.qpar, 2
+        # P(c | ROOT)
+        self.root_cat_mlp = nn.Linear(1, self.call).to(self.device)
+        # P(p | ROOT)
+        self.root_pred_mlp = nn.Linear(1, self.p).to(self.device)
+
+        # one-hot embeddings for all (category, predicate) pairs
+        self.catpred_emb = nn.Parameter(
+            torch.eye(self.call*self.p)
         )
 
-        # decides terminal or nonterminal
-        self.split_mlp = nn.Sequential(
-            nn.Linear(state_dim, state_dim),
-            ResidualLayer(state_dim, state_dim),
-            ResidualLayer(state_dim, state_dim),
-            nn.Linear(state_dim, 2)
+#        # one-hot embeddings for (category, predicate) pairs
+#        self.par_catpred_emb = nn.Parameter(
+#            torch.eye(self.cpar*self.p)
+#        )
+
+        # one-hot embeddings for (category, operation) pairs
+        self.par_catop_emb = nn.Parameter(
+            torch.eye(self.cpar*2)
+        )
+#        self.par_cat_emb = nn.Parameter(
+#            torch.eye(self.cpar)
+#        ).to(self.device)
+#        self.par_pred_emb = nn.Parameter(
+#            torch.eye(self.p)
+#        ).to(self.device)
+#
+        # P(o | c, p)
+        # o \in {Aa, Ab, lex}
+        self.op_mlp = nn.Linear(self.call*self.p, 3).to(self.device)
+
+        # P(c' | c, o)
+        # o \in {Aa, Ab}
+        self.cat_mlp = nn.Linear(self.cpar*2, self.cgen).to(self.device)
+
+        # P(p' | c, p)
+        # not learnable; based on association matrix
+        # don't need to condition on o because either way it's argument
+        # attachment
+        #self.assoc_scores = torch.stack([self.assoc_arg1, self.assoc_arg2], dim=0)
+        self.assoc_scores = torch.zeros(
+            (self.call*self.p, self.p)
+        ).to(self.device)
+        for c_ix, cat in self.ix2cat_all.items():
+            argdepth = cat.arg_depth()
+            for p_ix in range(self.p):
+                if argdepth == 0:
+                    # arg1 association if parent is a primitive
+                    assoc = self.assoc_arg1[p_ix]
+                elif argdepth == 1:
+                    # arg2 association if parent has depth 1
+                    assoc = self.assoc_arg2[p_ix]
+                else:
+                    # otherwise just dummy values
+                    assoc = torch.full((self.p,), fill_value=1/self.p)
+                row_ix = c_ix*self.p + p_ix
+                self.assoc_scores[row_ix] = assoc
+
+        print("CEC assoc_scores:", self.assoc_scores)
+        print("CEC assoc_scores shape:", self.assoc_scores.shape)
+
+        # P(w | c, p, o=lex)
+        self.word_mlp = nn.Linear(
+            self.call*self.p, num_words
         ).to(self.device)
 
+        # TODO fix args
         self.parser = BatchCKYParser(
             ix2cat=self.ix2cat_all,
-            ix2pred=self.ix2pred,
-            ix2predcat=self.ix2predcat,
-            ix2predcat_par=self.ix2predcat_par,
-            ix2predcat_gen=self.ix2predcat_gen,
-            genpc_2_pc = self.genpc_2_pc,
+            ix2cat_par=self.ix2cat_par,
+            ix2cat_gen=self.ix2cat_gen,
+            p=self.p,
+            assoc_scores=self.assoc_scores,
             lfunc_ixs=self.lfunc_ixs,
             rfunc_ixs=self.rfunc_ixs,
             larg_mask=self.larg_mask,
             rarg_mask=self.rarg_mask,
-            qall=self.qall,
-            qpar=self.qpar,
-            qgen=self.qgen,
             device=self.device
         )
 
@@ -141,7 +173,6 @@ class BasicCGInducer(nn.Module):
             # all of this stuff is just for option 1
             assert self.max_func_depth is None
             assert self.max_arg_depth is None
-            assert self.left_arg_penalty is None
             all_cats, par_cats, gen_cats = read_categories_from_file(
                 self.cats_list
             )
@@ -167,16 +198,8 @@ class BasicCGInducer(nn.Module):
             ix2cat_gen[len(ix2cat_gen)] = cat
         self.ix2cat_gen = ix2cat_gen
 
-        # NOTE: this code is deprecated. To reintroduce a penalty for argument
-        # depth, a get_depth method should be added to CGNode in cg_type.py,
-        # and then ix2depth should be defined here
-#        if self.arg_depth_penalty:
-#            printDebug("ix2depth: {}".format(ix2depth))
-#            ix2depth_gen = torch.Tensor(ix2depth[:len(gen_cats)])
-#            # dim: Qpar x 2Qgen
-#            arg_penalty_mat = -self.arg_depth_penalty \
-#                * ix2depth_gen.tile((len(par_cats), 2))
-#            self.arg_penalty_mat = arg_penalty_mat.to(self.device)
+        parcat_2_allcat = [ix2cat_all.inv[ix2cat_par[i]] for i in ix2cat_par]
+        self.parcat_2_allcat = torch.tensor(parcat_2_allcat).to(self.device)
 
         # cat_arg_depths[i] gives the number of arguments taken by category
         # ix2cat_all[i]
@@ -193,196 +216,33 @@ class BasicCGInducer(nn.Module):
 
 
     def init_predicates(self, config):
-        predicates = set()
-        # pred_role_counts[p] is the number of roles associated with
-        # predicate p
-        pred_role_counts = defaultdict(int)
-        # arg1_assoc[h][j] is the weight for j being h's first argument
-        arg1_assoc = defaultdict(dict)
-        arg2_assoc = defaultdict(dict)
-        # mod_assoc[h][j] is the weight for j modifying h
-        mod_assoc = defaultdict(dict)
+        predicates = list()
+        valences = list()
+        pred_f = config["predicates"]
+        for l in open(pred_f):
+            pred, valence = l.strip().split(',')
+            valence = int(valence)
+            predicates.append(pred)
+            valences.append(valence)
+        ix2pred = bidict(enumerate(predicates))
 
-        f_assoc = open(config["predicate_associations"])
-        # header
-        f_assoc.readline()
-        for l in f_assoc:
-            pred1, pred1role, pred2, pred2role, score = l.strip().split()
-            pred1role = int(pred1role)
-            pred2role = int(pred2role)
-            score = float(score)
-            predicates.add(pred1)
-            predicates.add(pred2)
-            pred_role_counts[pred1] = max(pred1role, pred_role_counts[pred1])
-            pred_role_counts[pred2] = max(pred2role, pred_role_counts[pred2])
-            if pred1role == 0 and pred2role == 1:
-                # NOTE: reverse the order of the predicates so that the thing
-                # taking the argument comes first
-                arg1_assoc[pred2][pred1] = score
-            elif pred1role == 0 and pred2role == 2:
-                arg2_assoc[pred2][pred1] = score
-            elif pred1role == 0 and pred2role == 0:
-                mod_assoc[pred2][pred1] = score
-            else:
-                raise NotImplementedError(
-                    "Only first and second arguments are currently supported. Offending line: {}".format(l)
-                )
+        assoc_arg1 = list()
+        assoc_f = config["associations_arg1"]
+        for row in csv.reader(open(assoc_f)):
+            assoc = [float(a) for a in row]
+            assoc_arg1.append(assoc)
+        assoc_arg2 = list()
+        assoc_f = config["associations_arg2"]
+        for row in csv.reader(open(assoc_f)):
+            assoc = [float(a) for a in row]
+            assoc_arg2.append(assoc)
 
-        preds_by_role_count = defaultdict(set)
-        for p in pred_role_counts:
-            count = pred_role_counts[p]
-            preds_by_role_count[count].add(p)
-
-        ix2pred = bidict(enumerate(sorted(predicates)))
-        # use predicate indices instead of raw predicates for
-        # indexing associations
-        arg1_assoc_ix = defaultdict(dict)
-        for h in arg1_assoc:
-            hix = ix2pred.inverse[h]
-            for j in arg1_assoc[h]:
-                jix = ix2pred.inverse[j]
-                arg1_assoc_ix[hix][jix] = arg1_assoc[h][j]
-        arg2_assoc_ix = defaultdict(dict)
-        for h in arg2_assoc:
-            hix = ix2pred.inverse[h]
-            for j in arg2_assoc[h]:
-                jix = ix2pred.inverse[j]
-                arg2_assoc_ix[hix][jix] = arg2_assoc[h][j]
-        mod_assoc_ix = defaultdict(dict)
-        for h in mod_assoc:
-            hix = ix2pred.inverse[h]
-            for j in arg2_assoc[h]:
-                jix = ix2pred.inverse[j]
-                mod_assoc_ix[hix][jix] = mod_assoc[h][j]
-
+        self.predicates = predicates
+        self.p = len(self.predicates)
         self.ix2pred = ix2pred
-        self.preds_by_role_count = preds_by_role_count
-        self.pred_role_counts = pred_role_counts
-        self.arg1_assoc = arg1_assoc_ix
-        self.arg2_assoc = arg2_assoc_ix
-        self.mod_assoc = mod_assoc_ix
-
-
-    def init_predcats(self):
-        max_pred_role_count = max(self.preds_by_role_count)
-        # ix2predcat assigns an index to each valid (predicate, category)
-        # pair. E.g., if the index of (DOG, 1/0) is 5, then
-        # ix2predcat[5] = (ix2pred.inv[DOG], ix2cat_all.inv[1/0])
-        ix2predcat = bidict()
-        # preds_per_cat[i] is the set of different predicates that
-        # could be assigned to category ix2cat_all[i]
-        preds_per_cat = defaultdict(set)
-        for c in self.all_cats:
-            c_ix = self.ix2cat_all.inv[c]
-            arg_depth = self.cat_arg_depths[c_ix]
-            for i in range(arg_depth, max_pred_role_count+1):
-                preds_with_i_args = self.preds_by_role_count[i]
-                for p in preds_with_i_args:
-                    p_ix = self.ix2pred.inv[p]
-                    ix2predcat[len(ix2predcat)] = (p_ix, c_ix)
-                    preds_per_cat[c_ix].add(p)
-
-        ix2predcat_par = bidict()
-        par_preds_per_cat = defaultdict(set)
-        for c in self.par_cats:
-            c_ix = self.ix2cat_all.inverse[c]
-            arg_depth = self.cat_arg_depths[c_ix]
-            # NOTE: a predicate must have at least n+1 roles to appear with a
-            # category of arg depth n. This means that e.g. DOG cannot appear as a
-            # parent category even with a primitive category. This rule may need to
-            # be changed when modification is added
-            for i in range(arg_depth+1, max_pred_role_count+1):
-                preds_with_i_args = self.preds_by_role_count[i]
-                for p in preds_with_i_args:
-                    p_ix = self.ix2pred.inv[p]
-                    ix2predcat_par[len(ix2predcat_par)] = (p_ix, c_ix)
-                    par_preds_per_cat[c_ix].add(p)
-
-        ix2predcat_gen = bidict()
-        gen_preds_per_cat = defaultdict(set)
-        for c in self.gen_cats:
-            c_ix = self.ix2cat_all.inverse[c]
-            arg_depth = self.cat_arg_depths[c_ix]
-            for i in range(arg_depth, max_pred_role_count+1):
-                preds_with_i_args = self.preds_by_role_count[i]
-                for p in preds_with_i_args:
-                    p_ix = self.ix2pred.inv[p]
-                    ix2predcat_gen[len(ix2predcat_gen)] = (p_ix, c_ix)
-                    gen_preds_per_cat[c_ix].add(p)
-
-        # maps index of an gen predcat to its index in the full set of predcats
-        # used during viterbi parsing
-        genpc_2_pc = [ix2predcat.inv[ix2predcat_gen[i]] for i in range(len(ix2predcat_gen))]
-        # maps index of a par predcat to its index in the full set of predcats
-        # used to select split scores for binary-branching nodes
-        parpc_2_pc = [ix2predcat.inv[ix2predcat_par[i]] for i in range(len(ix2predcat_par))]
-
-        self.pred_counts = torch.tensor(
-            [len(preds_per_cat[self.ix2cat_all.inv[c]]) for c in self.all_cats]
-        ).to(self.device)
-        # total number of predcats, i.e. (predicate, category) pairs
-        self.par_pred_counts = torch.tensor(
-            [len(par_preds_per_cat[self.ix2cat_all.inv[c]]) for c in self.par_cats]
-        ).to(self.device)
-        self.gen_pred_counts = torch.tensor(
-            [len(gen_preds_per_cat[self.ix2cat_all.inv[c]]) for c in self.gen_cats]
-        ).to(self.device)
-        self.ix2predcat = ix2predcat
-        self.ix2predcat_par = ix2predcat_par
-        self.ix2predcat_gen = ix2predcat_gen
-        self.genpc_2_pc = torch.tensor(genpc_2_pc).to(self.device)
-        self.parpc_2_pc = torch.tensor(parpc_2_pc).to(self.device)
-        self.qall = sum(self.pred_counts).item()
-        self.qpar = sum(self.par_pred_counts).item()
-        self.qgen = sum(self.gen_pred_counts).item()
-
-
-    def init_association_matrix(self):
-        associations = torch.full(
-            (self.qpar, self.qgen), fill_value=-QUASI_INF
-        )
-
-        # add arg1 associations
-        H_par = self.arg1_assoc.keys()
-        for h_par in H_par:
-            # the parent category should have 0 remaining arguments for arg1
-            # attachment
-            C_par = self.arg_depth_to_cats_par[0]
-            H_gen = sorted(self.arg1_assoc[h_par].keys())
-            C_gen = [self.ix2cat_all.inv[c] for c in self.gen_cats]
-            H_gen_bd = bidict(enumerate(H_gen))
-            raw_scores = torch.tensor([self.arg1_assoc[h_par][h] for h in H_gen])
-            scores = torch.log_softmax(raw_scores, dim=0)
-            for h_gen in H_gen:
-                score = scores[H_gen_bd.inv[h_gen]]
-                for c_par in C_par:
-                    for c_gen in C_gen:
-                        row = self.ix2predcat_par.inv[(h_par, c_par)]
-                        col = self.ix2predcat_gen.inv[(h_gen, c_gen)]
-                        assert associations[row, col] == -QUASI_INF
-                        associations[row, col] = score
-
-        # add arg2 associations
-        H_par = self.arg2_assoc.keys()
-        for h_par in H_par:
-            # the parent category should have 1 remaining argument for arg2
-            # attachment
-            C_par = self.arg_depth_to_cats_par[1]
-            H_gen = sorted(self.arg2_assoc[h_par].keys())
-            C_gen = [self.ix2cat_all.inv[c] for c in self.gen_cats]
-            H_gen_bd = bidict(enumerate(H_gen))
-            raw_scores = torch.tensor([self.arg2_assoc[h_par][h] for h in H_gen])
-            scores = torch.log_softmax(raw_scores, dim=0)
-            for h_gen in H_gen:
-                score = scores[H_gen_bd.inv[h_gen]]
-                for c_par in C_par:
-                    for c_gen in C_gen:
-                        row = self.ix2predcat_par.inv[(h_par, c_par)]
-                        col = self.ix2predcat_gen.inv[(h_gen, c_gen)]
-                        assert associations[row, col] == -QUASI_INF
-                        associations[row, col] = score
-
-        self.associations = associations
+        self.valences = valences
+        self.assoc_arg1 = torch.tensor(assoc_arg1)
+        self.assoc_arg2 = torch.tensor(assoc_arg2)
 
 
     def init_masks(self):
@@ -410,67 +270,57 @@ class BasicCGInducer(nn.Module):
                 if rfunc not in self.all_cats:
                     larg_mask[par_ix, gen_ix] = -QUASI_INF
 
-        larg_mask = larg_mask.repeat_interleave(
-            self.par_pred_counts, dim=0
-        ).repeat_interleave(
-            self.gen_pred_counts, dim=1
-        )
-        rarg_mask = rarg_mask.repeat_interleave(
-            self.par_pred_counts, dim=0
-        ).repeat_interleave(
-            self.gen_pred_counts, dim=1
-        )
         self.larg_mask = larg_mask.to(self.device)
         self.rarg_mask = rarg_mask.to(self.device)
 
+        # ensures that only primitive categories are allowed at the root
+        root_cat_mask = torch.full(
+            (self.call,), fill_value=-QUASI_INF
 
-        root_mask = torch.full(
-            (self.qall,), fill_value=-np.inf
-        ).to(self.device)
-        for ix in range(self.qall):
-            pred_ix, cat_ix = self.ix2predcat[ix]
-            cat = self.ix2cat_all[cat_ix]
-            if (pred_ix, cat_ix) in self.ix2predcat_par.values() \
-                and cat.is_primitive():
-                root_mask[ix] = 0
+        )
+        for ix, cat in self.ix2cat_all.items():
+            if cat.is_primitive():
+                root_cat_mask[ix] = 0
 
-        self.root_mask = root_mask.to(self.device)
+        # for a category of depth i, blocks predicates with valence < i
+        # dim: call x p
+        pred_valence_mask = torch.full(
+            (self.call, self.p), fill_value=-QUASI_INF
+        )
+        for i, cat in self.ix2cat_all.items():
+            depth = cat.arg_depth()
+            for j in range(self.p):
+                valence = self.valences[j]
+                if valence >= depth:
+                    pred_valence_mask[i, j] = 0
 
+        self.root_cat_mask = root_cat_mask.to(self.device)
+        self.pred_valence_mask = pred_valence_mask.to(self.device)
 
     def init_functor_lookup_tables(self):
-        # given an parent/result predcat index (i) and an argument/generated child 
-        # predcat index (j), lfunc_ixs[i, j] gives the functor predcat that
-        # takes predcat j as a right argument and returns predcat i
+        # given an parent/result cat index (i) and an argument/generated child 
+        # cat index (j), lfunc_ixs[i, j] gives the functor cat that
+        # takes cat j as a right argument and returns cat i
         # e.g. for the rule V -> V-bN N:
         # lfunc_ixs[V, N] = V-bN
-        # note that the returned indices are the ones used in ix2predcat,
-        # not ix2predcat_par or ix2predcat_gen (which use their own indexing
-        # for possible predcats)
-        lfunc_ixs = torch.empty(self.qpar, self.qgen, dtype=torch.int64)
+        # note that the returned indices are the ones used in ix2cat,
+        # not ix2cat_par or ix2cat_gen (which use their own indexing
+        # for possible cats)
+        lfunc_ixs = torch.empty(self.cpar, self.cgen, dtype=torch.int64)
 
         # same idea but functor appears on the right
         # e.g. for the rule V -> N V-aN:
         # rfunc_ixs[V, N] = V-aN
-        rfunc_ixs = torch.empty(self.qpar, self.qgen, dtype=torch.int64)
+        rfunc_ixs = torch.empty(self.cpar, self.cgen, dtype=torch.int64)
 
-        for par_pc_ix, (par_p_ix, par_c_ix) in self.ix2predcat_par.items():
-            for gen_pc_ix, (_, gen_c_ix) \
-                in self.ix2predcat_gen.items():
-                par_c = self.ix2cat_all[par_c_ix]
-                gen_c = self.ix2cat_all[gen_c_ix]
-                lfunc_c = CGNode("-b", par_c, gen_c)
-                lfunc_c_ix = self.ix2cat_all.inv[lfunc_c]
-                # predicate for functor category is the same as predicate for
-                # parent category. NOTE: this works for argument attachment
-                # but won't work for modifier attachment
-                lfunc_p_ix = par_p_ix
-                lfunc_pc_ix = self.ix2predcat.inv[(lfunc_p_ix, lfunc_c_ix)]
-                lfunc_ixs[par_pc_ix, gen_pc_ix] = lfunc_pc_ix
-                rfunc_c = CGNode("-a", par_c, gen_c)
-                rfunc_c_ix = self.ix2cat_all.inv[rfunc_c]
-                rfunc_p_ix = par_p_ix
-                rfunc_pc_ix = self.ix2predcat.inv[(rfunc_p_ix, rfunc_c_ix)]
-                rfunc_ixs[par_pc_ix, gen_pc_ix] = rfunc_pc_ix
+        for par_ix, par_cat in self.ix2cat_par.items():
+            for gen_ix, gen_cat in self.ix2cat_gen.items():
+                lfunc_cat = CGNode("-b", par_cat, gen_cat)
+                lfunc_ix = self.ix2cat_all.inv[lfunc_cat]
+                lfunc_ixs[par_ix, gen_ix] = lfunc_ix
+                rfunc_cat = CGNode("-a", par_cat, gen_cat)
+                rfunc_ix = self.ix2cat_all.inv[rfunc_cat]
+                rfunc_ixs[par_ix, gen_ix] = rfunc_ix
 
         self.lfunc_ixs = lfunc_ixs.to(self.device)
         self.rfunc_ixs = rfunc_ixs.to(self.device)
@@ -479,111 +329,145 @@ class BasicCGInducer(nn.Module):
     def forward(self, x, eval=False, argmax=False, indices=None, set_grammar=True):
         # x : batch x n
         if set_grammar:
-            # dim: Qall
-#            root_scores = F.log_softmax(
-#                self.root_mask+self.root_mlp(self.root_emb).squeeze(), dim=0
-#            )
-            # all possible root nodes are assigned equal probability.
-            # the commented-out alternative assigns root nodes randomly initialized
-            # probabilities
-            root_scores = F.log_softmax(self.root_mask, dim=0)
-            full_p0 = root_scores
+            # P(c | ROOT)
+            # dim: call
+            print("CEC root_emb:", self.root_emb)
+            print("CEC unmasked:", self.root_cat_mlp(self.root_emb))
+            root_cat_scores = F.log_softmax(
+                self.root_cat_mask \
+                     + self.root_cat_mlp(self.root_emb).squeeze(),
+                dim=0
+            )
+            print("CEC root_cat_scores:", root_cat_scores)
+            # P(p | ROOT)
+            # dim: p
+            # NOTE: no need to add pred_valence_mask here because the only
+            # legal categories are primitives, which can go with any predicate
+            root_pred_scores = F.log_softmax(
+                self.root_pred_mlp(self.root_emb).squeeze(),
+                dim=0
+            )
+            print("CEC root_pred_scores:", root_pred_scores)
 
-            # dim: Qpar x 2 (assuming 2 available operations)
-            operation_scores = self.operation_mlp(self.par_predcat_onehot)
+            # P(c, p | ROOT)
+            # dim: call x p
+            root_scores = root_cat_scores[:, None] + root_pred_scores[None, :]
+            # dim: call*p
+            root_scores = root_scores.reshape(self.call*self.p)
+            print("CEC root_scores:", root_scores)
+
+            # P(o | c, p)
+            print("CEC catpred_emb:", self.catpred_emb)
+            # this give operation probabilities for all possible cat, pred pairs
+            # dim: call*p x 3
+            operation_scores = self.op_mlp(self.catpred_emb)
+            # TODO mask Aa and Ab operations when predicate's valence isn't
+            # high enough
+            # dim: call*p x 3
             operation_probs = F.log_softmax(operation_scores, dim=1)
-            # dim: Qpar
-            op_Aa_probs = operation_probs[:, 0]
-            # dim: Qpar
-            op_Ab_probs = operation_probs[:, 1]
+            # dim: call*p
+            opLex_probs = operation_probs[:, 2]
+            print("CEC operation_probs:", operation_probs)
+            # pick out the cpar*p possibilities for binary-branching
+            # nodes
+            # dim: call x p x 3
+            par_operation_probs = operation_probs.reshape(self.call, self.p, 3)
+            par_cat_ixs = self.parcat_2_allcat.reshape(self.cpar, 1, 1)
+            par_cat_ixs = par_cat_ixs.repeat(1, self.p, 3)
+            print("CEC par_cat_ixs:", par_cat_ixs)
+            print("CEC gen_cat_ixs shape:", par_cat_ixs.shape)
+            # dim: cpar x p x 3
+            par_operation_probs = par_operation_probs.gather(index=par_cat_ixs, dim=0)
+            # dim: cpar*p x 3
+            par_operation_probs = par_operation_probs.reshape(self.cpar*self.p, 3)
+            opAa_probs = par_operation_probs[:, 0]
+            opAb_probs = par_operation_probs[:, 1]
+            print("CEC par_operation_probs:", par_operation_probs)
 
-            # dim: Cpar x 2Cgen
-            mlp_out = self.rule_mlp(self.par_cat_onehot)
-#            if self.arg_depth_penalty:
-#                mlp_out += self.arg_penalty_mat
+            # P(c' | c, o)
+            # dim: cpar*2 x cgen
+            gen_cat_scores = self.cat_mlp(self.par_catop_emb)
+            gen_cat_probs = F.log_softmax(gen_cat_scores, dim=1)
+            # dim: cpar x 2 x cgen
+            gen_cat_probs = gen_cat_probs.reshape(self.cpar, 2, self.cgen)
+            print("CEC gen_cat_probs:", gen_cat_probs)
 
-            # penalizes rules that use backward function application
-            # (in practice encourages right-branching structures)
-            if self.left_arg_penalty:
-                larg_penalty = torch.full(
-                    (self.cpar, self.cgen),
-                    -self.left_arg_penalty
-                )
-                rarg_penalty = torch.full((self.cpar, self.cgen), 0)
-                # dim: Cpar x 2Cgen
-                penalty = torch.concat(
-                    [larg_penalty, rarg_penalty], dim=1
-                ).to(self.device)
-                mlp_out += penalty
+            par_cat_arg_depths = list()
+            for cat in self.ix2cat_par.values():
+                par_cat_arg_depths.append(cat.arg_depth())
+            par_cat_arg_depths = torch.tensor(par_cat_arg_depths)
+            print("CEC par_cat_arg_depths:", par_cat_arg_depths)
 
-            # dim: Cpar x Cgen
-            # probabilities for binary-branching nodes where preceding
-            # argument attachment (Aa) happens
-            rule_scores_Aa = mlp_out[:, :self.cgen]
-            rule_probs_Aa = F.log_softmax(rule_scores_Aa, dim=1)
+            # cpar x p x p x 1
+            par_cat_arg_depths = par_cat_arg_depths.reshape(-1, 1, 1, 1)
+            par_cat_arg_depths = par_cat_arg_depths.repeat(1, self.p, self.p, 1)
+            # used to select arg1 or arg2 associations for a parent
+            # cat, pred pair
+            # dim: cpar*p x p x 1
+            par_cat_arg_depths = par_cat_arg_depths.reshape(self.cpar*self.p, self.p, 1)
+            print("CEC par_cat_arg_depths expanded:", par_cat_arg_depths)
+            print("CEC par_cat_arg_depths expanded shape:", par_cat_arg_depths.shape)
 
-            # dim: Cpar x Cgen
-            # probabilities for binary-branching nodes where succeeding
-            # argument attachment (Ab) happens
-            rule_scores_Ab = mlp_out[:, self.cgen:]
-            rule_probs_Ab = F.log_softmax(rule_scores_Ab, dim=1)
+            assoc_stacked = torch.stack([self.assoc_arg1, self.assoc_arg2], dim=2)
+            # dim: cpar*p x p x 2
+            print("CEC assoc_stacked:", assoc_stacked)
+            assoc_stacked = assoc_stacked.repeat(self.cpar, 1, 1)
+            print("CEC assoc_stacked repeated:", assoc_stacked)
+            print("CEC assoc_stacked shape:", assoc_stacked.shape)
 
-            # expand rule probabilities from Cpar x Cgen to Qpar x Qgen
-            # first expand to Qpar x Cgen...
-            cat_ixs_par = [c_ix for _, c_ix in self.ix2predcat_par.values()]
-            cats_par = [self.ix2cat_all[ix] for ix in cat_ixs_par]
-            cat_ixs_par = [self.ix2cat_par.inv[c] for c in cats_par]
-            cat_ixs_row = torch.tensor(cat_ixs_par).to(self.device)
-            cat_ixs_row = cat_ixs_row.unsqueeze(dim=1).repeat(1, self.cgen)
-            rule_probs_Aa = rule_probs_Aa.gather(dim=0, index=cat_ixs_row)
-            rule_probs_Ab = rule_probs_Ab.gather(dim=0, index=cat_ixs_row)
+            # P (p' | c, p)
+            gen_pred_probs = assoc_stacked.gather(index=par_cat_arg_depths, dim=2)
+            # dim: cpar*p x p
+            gen_pred_probs = torch.log(gen_pred_probs.squeeze(dim=-1))
+            print("CEC gen_pred_probs:", gen_pred_probs)
 
-            # ...then expand to Qpar x Qgen
-            cat_ixs_gen = [c_ix for _, c_ix in self.ix2predcat_gen.values()]
-            cats_gen = [self.ix2cat_all[ix] for ix in cat_ixs_gen]
-            cat_ixs_gen = [self.ix2cat_gen.inv[c] for c in cats_gen]
-            cat_ixs_col = torch.tensor(cat_ixs_gen).to(self.device)
-            cat_ixs_col = cat_ixs_col.unsqueeze(dim=0).repeat(self.qpar, 1)
-            rule_probs_Aa = rule_probs_Aa.gather(dim=1, index=cat_ixs_col)
-            rule_probs_Ab = rule_probs_Ab.gather(dim=1, index=cat_ixs_col)
+            # P(c', p', o=Aa | c, p)
+            # dim: cpar*p x 1
+            op_expand = opAa_probs.unsqueeze(-1)
+            # dim: cpar*p x cgen
+            cat_expand = gen_cat_probs[:, 0, :].repeat_interleave(self.p, dim=0)
+            # dim: cpar*p x cgen*p
+            cat_expand = cat_expand.repeat_interleave(self.p, dim=1)
+            # dim: cpar*p x cgen*p
+            pred_expand = gen_pred_probs.repeat(1, self.cgen)
+            # P(c', p', o=Ab | c, p)
+            print("CEC op_expand:", op_expand)
+            print("CEC op_expand shape:", op_expand.shape)
+            print("CEC cat_expand:", cat_expand)
+            print("CEC cat_expand shape:", cat_expand.shape)
+            print("CEC pred_expand:", pred_expand)
+            print("CEC pred_expand shape:", pred_expand.shape)
+            full_G_Aa = op_expand + cat_expand + pred_expand
+            print("CEC full_G_Aa:", full_G_Aa)
 
-            # dim: Qall x 2
-            split_scores = self.split_mlp(self.all_predcat_emb)
-
-            # dim: Qall x 2
-            # split_scores[:, 0] gives P(terminal=0 | cat)
-            # split_scores[:, 1] gives P(terminal=1 | cat)
-            split_probs = F.log_softmax(split_scores, dim=1)
-
-            parpc_ix = self.parpc_2_pc.unsqueeze(dim=1).repeat(1, 2)
-            # terminal/nonterminal probabilities for par cats (which 
-            # are the ones that can undergo terminal expansion)
-            # dim: Qpar x 2
-            split_probs_par = split_probs.gather(dim=0, index=parpc_ix)
-            
-            # dim: Qpar x Qgen
-            full_G_Aa = split_probs_par[:, 0][..., None] \
-                + op_Aa_probs[..., None] \
-                + self.associations \
-                + rule_probs_Aa
-            full_G_Ab = split_probs_par[:, 0][..., None] \
-                + op_Ab_probs[..., None] \
-                + self.associations \
-                + rule_probs_Ab
+            # P(c', p', o=Ab | c, p)
+            # dim: cpar*p x 1
+            op_expand = opAb_probs.unsqueeze(-1)
+            # dim: cpar*p x cgen
+            cat_expand = gen_cat_probs[:, 1, :].repeat_interleave(self.p, dim=0)
+            # dim: cpar*p x cgen*p
+            cat_expand = cat_expand.repeat_interleave(self.p, dim=1)
+            print("CEC op_expand shape:", op_expand.shape)
+            print("CEC cat_expand shape:", cat_expand.shape)
+            print("CEC pred_expand shape:", pred_expand.shape)
+            # P(c', p', o=Ab | c, p)
+            full_G_Ab = op_expand + cat_expand + pred_expand
+            print("CEC full_G_Ab:", full_G_Ab)
 
             self.parser.set_models(
-                full_p0,
+                root_scores,
                 full_G_Aa,
                 full_G_Ab,
-                split_probs
+                opLex_probs
             )
 
-        if self.model_type == 'word':
-            x = self.emit_prob_model(x, self.all_predcat_emb, set_grammar=set_grammar)
-        else:
-            assert self.model_type == "char"
-            x = self.emit_prob_model(x, self.all_predcat_emb, set_grammar=set_grammar)
-
+        # v x c*p
+        #dist = F.softmax(self.word_mlp(self.catpred_emb), dim=1).t()
+        dist = F.log_softmax(self.word_mlp(self.catpred_emb), dim=1).t()
+        # batch x sentlen x c*p
+        x = dist[x, :]
+        printDebug("CEC x shape:", x.shape)
+        #x = self.emit_prob_model(x, self.all_predcat_emb, set_grammar=set_grammar)
         if argmax:
             if eval and self.device != self.eval_device:
                 print("Moving model to {}".format(self.eval_device))

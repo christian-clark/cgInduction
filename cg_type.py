@@ -24,6 +24,17 @@ class CGNode:
     def is_primitive(self):
         return self.res_arg is None
 
+    def arg_depth(self):
+        return CGNode._get_arg_depth(self)
+
+    @staticmethod
+    def _get_arg_depth(node):
+        if node.is_primitive():
+            return 0
+        else:
+            res = node.res_arg[0]
+            return 1 + CGNode._get_arg_depth(res)
+
     def __str__(self):
         stack, out = list(), list()
         CGNode._build_str(self, stack, out)

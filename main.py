@@ -3,7 +3,6 @@ import torch.nn.functional as F
 import numpy as np
 import torch.optim as optim
 from configparser import ConfigParser
-from torch.utils.tensorboard import SummaryWriter
 
 import preprocess, postprocess, model_use
 from top_models import TopModel
@@ -104,7 +103,6 @@ def setup(eval_only=False):
         top_config.write(cf)
 
     logfile_fh = gzip.open(os.path.join(config["model_path"], config["logfile"]), 'wt')
-    writer = SummaryWriter(os.path.join(config["model_path"], "tensorboard"), flush_secs=10)
     filehandler = logging.StreamHandler(logfile_fh)
     streamhandler = logging.StreamHandler(sys.stdout)
     handler_list = [filehandler, streamhandler]
@@ -114,7 +112,6 @@ def setup(eval_only=False):
     # Dump configurations
     config_str = str(dict(config))
     logging.info(config_str)
-    writer.add_text('args', config_str)
 
     assert (config["device"] == "cuda" and torch.cuda.is_available()) \
         or config["device"] == "cpu"
@@ -144,49 +141,18 @@ def setup(eval_only=False):
         logging.info('valid instance: {}, valid tokens: {}.'.format(len(valid_sents), sum([len(s) - 1 for s in valid_sents])))
 
     word_lexicon = bidict.bidict()
-
-    # Maintain the vocabulary. vocabulary is used in either WordEmbeddingInput or softmax classification
-    # NOTE: min count of 1 is currently hard-coded
-    logging.warning('enforcing minimum count of 1')
-    vocab = preprocess.get_truncated_vocab(
-        train_sents, 1, config.getint("max_vocab_size")
-    )
-
-    # Ensure index of '<oov>' is 0
-    special_words = [preprocess.OOV, preprocess.BOS, preprocess.EOS, preprocess.PAD, preprocess.LRB, preprocess.RRB]
-    special_chars = [preprocess.BOS, preprocess.EOS, preprocess.OOV, preprocess.PAD, preprocess.BOW, preprocess.EOW]
-
-    for special_word in special_words:
-        if special_word not in word_lexicon:
-            word_lexicon[special_word] = len(word_lexicon)
-
-    for word, _ in vocab:
-        if word not in word_lexicon:
-            word_lexicon[word] = len(word_lexicon)
+    for sent in train_sents:
+        for word in sent:
+            if word not in word_lexicon:
+                word_lexicon[word] = len(word_lexicon)
 
     logging.info('Vocabulary size: {0}'.format(len(word_lexicon)) + '; Max length: {}'.format(max([len(x) for x in word_lexicon])))
-
-    # Character Lexicon
-    char_lexicon = bidict.bidict()
-
-    for sentence in train_sents:
-        for word in sentence:
-            for ch in word:
-                if ch not in char_lexicon:
-                    char_lexicon[ch] = len(char_lexicon)
-
-    for special_char in special_chars:
-        if special_char not in char_lexicon:
-            char_lexicon[special_char] = len(char_lexicon)
-
-    logging.info('Char embedding size: {0}'.format(len(char_lexicon)))
 
     # training batch size for the pre training is 8 times larger than in eval
     train = preprocess.create_batches(
         train_sents,
         config.getint("batch_size"),
         word_lexicon,
-        char_lexicon,
         device=config["device"],
     )
 
@@ -197,7 +163,6 @@ def setup(eval_only=False):
             valid_sents,
             config.getint("batch_size"),
             word_lexicon,
-            char_lexicon,
             eval=True,
             device=config["device"],
             eval_device=config["eval_device"]
@@ -211,7 +176,6 @@ def setup(eval_only=False):
 
     parser = BasicCGInducer(
         config,
-        num_chars=len(char_lexicon),
         num_words=len(word_lexicon)
     )
 
@@ -235,7 +199,7 @@ def setup(eval_only=False):
         "Predicate examples: {}".format(list(parser.ix2pred.values())[:100])
     )
 
-    model = TopModel(parser, writer)
+    model = TopModel(parser)
 
     logging.info(str(model))
     num_grammar_params = 0
@@ -245,12 +209,7 @@ def setup(eval_only=False):
 
     model = model.to(config["device"])
 
-    # TODO hard-coded to use Adam?
     optimizer = optim.Adam(model.parameters(), lr=config.getfloat("learning_rate"))
-
-    with open(os.path.join(config["model_path"], "char.dic"), 'w', encoding="utf-8") as fpo:
-        for ch, i in char_lexicon.items():
-            print("{0}\t{1}".format(ch, i), file=fpo)
 
     with open(os.path.join(config["model_path"], "word.dic"), 'w', encoding="utf-8") as fpo:
         for w, i in word_lexicon.items():
@@ -282,7 +241,7 @@ def train():
             trees, valid_sents, -1, config["model_path"]
         )
         if valid_trees is not None:
-            eval_access(valid_pred_trees, valid_trees, model.writer, -1)
+            eval_access(valid_pred_trees, valid_trees, -1)
         model.to(config["device"])
         
     for epoch in range(config.getint("start_epoch"), config.getint("max_epoch")):
@@ -304,7 +263,7 @@ def train():
                     trees, valid_sents, epoch, config["model_path"]
                 )
                 if valid_trees is not None:
-                    eval_access(valid_pred_trees, valid_trees, model.writer, -1)
+                    eval_access(valid_pred_trees, valid_trees, -1)
                 model.to(config["device"])
 
             else:
@@ -374,9 +333,6 @@ def train():
                 logging.info(word_dist)
                 logging.info("======== END GRAMMAR DUMP ========")
 
-
-
-    model.writer.close()
     logfile_fh.close()
 
 
@@ -389,9 +345,7 @@ def test():
     valid_pred_trees = postprocess.print_trees(
         trees, valid_sents, 0, config["model_path"]
     )
-    eval_access(valid_pred_trees, valid_trees, model.writer, 0)
-    #model.to(config["device"])
-    model.writer.close()
+    eval_access(valid_pred_trees, valid_trees, 0)
     logfile_fh.close()
 
 

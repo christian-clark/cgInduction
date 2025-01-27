@@ -1,0 +1,5 @@
+pred1	pred1Role	pred2	pred2Role	score
+PA1	0	PV	1	1
+PA2	0	PV	1	1
+PP1	0	PV	2	1
+PP2	0	PV	2	1
