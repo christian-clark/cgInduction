@@ -7,7 +7,7 @@ def print_trees(trees, original_sents, epoch, model_path):
     with gzip.open(tree_filename, 'wt', encoding='utf8') as ofh:
         for index, (tree, ori_sent) in enumerate(zip(trees, original_sents)):
             if tree is None: print(str(index)+'#!#!', file=ofh)
-            ori_sent = ori_sent[1:-1]
+            #ori_sent = ori_sent[1:-1]
             assert len(tree.leaves()) == len(ori_sent), '\n'+str(index)+': '+str(tree) + '\n' + ' '.join(ori_sent)
             for index, position in enumerate(tree.treepositions('leaves')):
                 # tree[position] = ori_sent[int(tree[position])]

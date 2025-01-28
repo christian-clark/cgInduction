@@ -145,7 +145,7 @@ class BasicCGInducer(nn.Module):
             ix2cat=self.ix2cat_all,
             ix2cat_par=self.ix2cat_par,
             ix2cat_gen=self.ix2cat_gen,
-            p=self.p,
+            ix2pred=self.ix2pred,
             assoc_scores=self.assoc_scores,
             lfunc_ixs=self.lfunc_ixs,
             rfunc_ixs=self.rfunc_ixs,
@@ -239,6 +239,9 @@ class BasicCGInducer(nn.Module):
 
         self.predicates = predicates
         self.p = len(self.predicates)
+        self.qpar = self.cpar * self.p
+        self.qgen = self.cgen * self.p
+        self.qall = self.call * self.p
         self.ix2pred = ix2pred
         self.valences = valences
         self.assoc_arg1 = torch.tensor(assoc_arg1)
@@ -298,30 +301,37 @@ class BasicCGInducer(nn.Module):
         self.pred_valence_mask = pred_valence_mask.to(self.device)
 
     def init_functor_lookup_tables(self):
-        # given an parent/result cat index (i) and an argument/generated child 
-        # cat index (j), lfunc_ixs[i, j] gives the functor cat that
-        # takes cat j as a right argument and returns cat i
-        # e.g. for the rule V -> V-bN N:
-        # lfunc_ixs[V, N] = V-bN
-        # note that the returned indices are the ones used in ix2cat,
+        # given a parent/result (cat, pred) index (i) and an argument/
+        # generated child (cat, pred) index (j), lfunc_ixs[i, j] gives
+        # the functor (cat, pred) index that takes j as a right argument
+        # and returns i
+        # e.g. for the rule 
+        # (1, EAT) -> (1/0, EAT) (0, BUGS)
+        # lfunc_ixs[(1, EAT), (0, BUGS)] = (1/0, EAT)
+        # note that the returned indices use the category indexing from ix2cat,
         # not ix2cat_par or ix2cat_gen (which use their own indexing
         # for possible cats)
-        lfunc_ixs = torch.empty(self.cpar, self.cgen, dtype=torch.int64)
+        lfunc_ixs = torch.empty(self.qpar, self.qgen, dtype=torch.int64)
 
         # same idea but functor appears on the right
-        # e.g. for the rule V -> N V-aN:
-        # rfunc_ixs[V, N] = V-aN
-        rfunc_ixs = torch.empty(self.cpar, self.cgen, dtype=torch.int64)
+        rfunc_ixs = torch.empty(self.qpar, self.qgen, dtype=torch.int64)
 
-        for par_ix, par_cat in self.ix2cat_par.items():
-            for gen_ix, gen_cat in self.ix2cat_gen.items():
-                lfunc_cat = CGNode("-b", par_cat, gen_cat)
-                lfunc_ix = self.ix2cat_all.inv[lfunc_cat]
-                lfunc_ixs[par_ix, gen_ix] = lfunc_ix
-                rfunc_cat = CGNode("-a", par_cat, gen_cat)
-                rfunc_ix = self.ix2cat_all.inv[rfunc_cat]
-                rfunc_ixs[par_ix, gen_ix] = rfunc_ix
-
+        for par_pc_ix in range(self.qpar):
+            par_p_ix = par_pc_ix % self.p
+            par_c_ix = par_pc_ix // self.p
+            par_c = self.ix2cat_par[par_c_ix]
+            for gen_pc_ix in range(self.qgen):
+                gen_c_ix = gen_pc_ix // self.p
+                gen_c = self.ix2cat_gen[gen_c_ix]
+                lfunc_c = CGNode("-b", par_c, gen_c)
+                lfunc_c_ix = self.ix2cat_all.inv[lfunc_c]
+                # functor inherits predicate from parent
+                lfunc_pc_ix = lfunc_c_ix*self.p + par_p_ix
+                lfunc_ixs[par_pc_ix, gen_pc_ix] = lfunc_pc_ix
+                rfunc_c = CGNode("-a", par_c, gen_c)
+                rfunc_c_ix = self.ix2cat_all.inv[rfunc_c]
+                rfunc_pc_ix = rfunc_c_ix*self.p + par_p_ix
+                rfunc_ixs[par_pc_ix, gen_pc_ix] = rfunc_pc_ix
         self.lfunc_ixs = lfunc_ixs.to(self.device)
         self.rfunc_ixs = rfunc_ixs.to(self.device)
 
