@@ -7,7 +7,7 @@ from configparser import ConfigParser
 import preprocess, postprocess, model_use
 from top_models import TopModel
 from eval.eval_access import eval_access
-from cg_inducer import BasicCGInducer, readableIx2predCat
+from cg_inducer import BasicCGInducer
 
 
 DEFAULT_CONFIG = {
@@ -283,54 +283,35 @@ def train():
 
             if config.getboolean("dump_grammar"):
                 logging.info("======== START GRAMMAR DUMP ========")
-                #torch.set_printoptions(precision=2, linewidth=120)
                 torch.set_printoptions(sci_mode=False, precision=2, linewidth=300)
-                logging.info("cat_arg_depths: {}".format(model.inducer.cat_arg_depths))
-                logging.info("arg_depth_to_cats_par: {}".format(model.inducer.arg_depth_to_cats_par))
-                logging.info("arg_depth_to_cats_gen: {}".format(model.inducer.arg_depth_to_cats_gen))
                 logging.info("ix2cat_all: {}".format(model.inducer.ix2cat_all))
-                logging.info("par_cats: {}".format(model.inducer.par_cats))
-                logging.info("gen_cats: {}".format(model.inducer.gen_cats))
+                logging.info("ix2cat_gen: {}".format(model.inducer.ix2cat_gen))
+                logging.info("ix2cat_par: {}".format(model.inducer.ix2cat_par))
                 logging.info("ix2pred: {}".format(model.inducer.ix2pred))
-                logging.info("ix2predcat: {}".format(readableIx2predCat(model.inducer.ix2predcat, model.inducer.ix2pred, model.inducer.ix2cat_all)))
-                logging.info("ix2predcat_gen: {}".format(readableIx2predCat(model.inducer.ix2predcat_gen, model.inducer.ix2pred, model.inducer.ix2cat_all)))
-                logging.info("ix2predcat_par: {}".format(readableIx2predCat(model.inducer.ix2predcat_par, model.inducer.ix2pred, model.inducer.ix2cat_all)))
-                logging.info("genpc_2_pc: {}".format(model.inducer.genpc_2_pc))
 
-                logging.info("p0 probs")
-                logging.info(torch.exp(model.inducer.parser.log_p0))
+                logging.info("valences: {}".format(model.inducer.valences))
+                logging.info("root_cat_mask: {}".format(model.inducer.root_cat_mask))
+                logging.info("pred_valence_mask: {}".format(model.inducer.pred_valence_mask))
 
-                logging.info("split probs")
-                logging.info(torch.exp(model.inducer.parser.split_scores))
+                logging.info("root probs")
+                logging.info(torch.exp(model.inducer.parser.root_scores))
 
-                operation_scores = model.inducer.operation_mlp(model.inducer.par_predcat_onehot)
-                operation_probs = F.log_softmax(operation_scores, dim=1)
                 logging.info("operation probs")
-                logging.info(torch.exp(operation_probs))
+                logging.info(torch.exp(model.inducer.operation_probs))
 
-                logging.info("association probs")
-                logging.info(torch.exp(model.inducer.associations))
+                logging.info("assoc_arg1")
+                logging.info(model.inducer.assoc_arg1)
+                logging.info("assoc_arg2")
+                logging.info(model.inducer.assoc_arg2)
 
-                mlp_out = model.inducer.rule_mlp(model.inducer.par_cat_onehot)
-                rule_scores_Aa = mlp_out[:, :model.inducer.cgen]
-                rule_probs_Aa = F.log_softmax(rule_scores_Aa, dim=1)
-                rule_scores_Ab = mlp_out[:, model.inducer.cgen:]
-                rule_probs_Ab = F.log_softmax(rule_scores_Ab, dim=1)
-                logging.info("rule_mlp Aa probs")
-                logging.info(torch.exp(rule_probs_Aa))
-                logging.info("rule_mlp Ab probs")
-                logging.info(torch.exp(rule_probs_Ab))
+                logging.info("full_G_Aa")
+                logging.info(torch.exp(model.inducer.full_G_Aa))
 
-                logging.info("combined G Aa probs")
-                logging.info(torch.exp(model.inducer.parser.log_G_Aa))
-                logging.info("combined G Ab probs")
-                logging.info(torch.exp(model.inducer.parser.log_G_Ab))
+                logging.info("full_G_Ab")
+                logging.info(torch.exp(model.inducer.full_G_Ab))
 
-                word_dist = torch.exp(model.inducer.emit_prob_model.dist)
-                logging.info("word_dist shape")
-                logging.info(word_dist.shape)
                 logging.info("word_dist")
-                logging.info(word_dist)
+                logging.info(torch.exp(model.inducer.word_dist))
                 logging.info("======== END GRAMMAR DUMP ========")
 
     logfile_fh.close()

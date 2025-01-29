@@ -19,15 +19,6 @@ def printDebug(*args, **kwargs):
         print(*args, **kwargs)
 
 
-def readableIx2predCat(ix2predcat, ix2pred, ix2cat):
-    readable = bidict()
-    for i, (pix, cix) in ix2predcat.items():
-        pred = ix2pred[pix]
-        cat = ix2cat[cix]
-        readable[i] = (pred, cat)
-    return readable
-
-
 class BasicCGInducer(nn.Module):
     def __init__(self, config, num_words):
         super(BasicCGInducer, self).__init__()
@@ -40,23 +31,8 @@ class BasicCGInducer(nn.Module):
         self.cats_list = config.get("category_list", fallback=None)
 
         self.init_cats()
-        print("CEC cats:", self.all_cats)
-        print("CEC cat arg depths:", self.cat_arg_depths)
-        print("CEC parcat_2_allcat:", self.parcat_2_allcat)
         self.init_predicates(config)
-        print("CEC predicates:", self.predicates)
-        print("CEC ix2pred:", self.ix2pred)
-        print("CEC valences:", self.valences)
-        print("CEC assoc_arg1:", self.assoc_arg1)
-        print("CEC assoc_arg2:", self.assoc_arg2)
-        
-        #self.init_predcats()
-        #self.init_association_matrix()
         self.init_masks()
-        print("CEC larg_mask:", self.larg_mask)
-        print("CEC rarg_mask:", self.rarg_mask)
-        print("CEC root_cat_mask:", self.root_cat_mask)
-        print("CEC pred_valence_mask:", self.pred_valence_mask)
         self.init_functor_lookup_tables()
 
         # P(ROOT -> c, p)
@@ -131,9 +107,6 @@ class BasicCGInducer(nn.Module):
                     assoc = torch.full((self.p,), fill_value=1/self.p)
                 row_ix = c_ix*self.p + p_ix
                 self.assoc_scores[row_ix] = assoc
-
-        print("CEC assoc_scores:", self.assoc_scores)
-        print("CEC assoc_scores shape:", self.assoc_scores.shape)
 
         # P(w | c, p, o=lex)
         self.word_mlp = nn.Linear(
@@ -341,14 +314,11 @@ class BasicCGInducer(nn.Module):
         if set_grammar:
             # P(c | ROOT)
             # dim: call
-            print("CEC root_emb:", self.root_emb)
-            print("CEC unmasked:", self.root_cat_mlp(self.root_emb))
             root_cat_scores = F.log_softmax(
                 self.root_cat_mask \
                      + self.root_cat_mlp(self.root_emb).squeeze(),
                 dim=0
             )
-            print("CEC root_cat_scores:", root_cat_scores)
             # P(p | ROOT)
             # dim: p
             # NOTE: no need to add pred_valence_mask here because the only
@@ -357,42 +327,53 @@ class BasicCGInducer(nn.Module):
                 self.root_pred_mlp(self.root_emb).squeeze(),
                 dim=0
             )
-            print("CEC root_pred_scores:", root_pred_scores)
 
             # P(c, p | ROOT)
             # dim: call x p
             root_scores = root_cat_scores[:, None] + root_pred_scores[None, :]
             # dim: call*p
             root_scores = root_scores.reshape(self.call*self.p)
-            print("CEC root_scores:", root_scores)
+            self.root_scores = root_scores
 
             # P(o | c, p)
-            print("CEC catpred_emb:", self.catpred_emb)
             # this give operation probabilities for all possible cat, pred pairs
             # dim: call*p x 3
             operation_scores = self.op_mlp(self.catpred_emb)
             # TODO mask Aa and Ab operations when predicate's valence isn't
             # high enough
+            # dim: p
+            zero_valence_mask = (torch.tensor(self.valences) == 0) * -QUASI_INF
+            # dim: call*p x 1
+            zero_valence_mask = zero_valence_mask.repeat(self.call).unsqueeze(-1)
+            # dim: call*p x 2
+            zero_valence_mask = zero_valence_mask.repeat(1, 2)
             # dim: call*p x 3
-            operation_probs = F.log_softmax(operation_scores, dim=1)
+            # zeros for last column because Lex operation is always ok
+            zero_valence_mask = torch.cat(
+                [zero_valence_mask, torch.zeros(self.call*self.p, 1)], dim=1
+            )
+            # dim: call*p x 3
+            # ops are Aa, Ab, Lex
+            operation_probs = F.log_softmax(
+                operation_scores+zero_valence_mask, dim=1
+            )
+            # used for grammar dump in main.py
+            self.operation_probs = operation_probs
             # dim: call*p
             opLex_probs = operation_probs[:, 2]
-            print("CEC operation_probs:", operation_probs)
+            self.opLex_probs = opLex_probs
             # pick out the cpar*p possibilities for binary-branching
             # nodes
             # dim: call x p x 3
             par_operation_probs = operation_probs.reshape(self.call, self.p, 3)
             par_cat_ixs = self.parcat_2_allcat.reshape(self.cpar, 1, 1)
             par_cat_ixs = par_cat_ixs.repeat(1, self.p, 3)
-            print("CEC par_cat_ixs:", par_cat_ixs)
-            print("CEC gen_cat_ixs shape:", par_cat_ixs.shape)
             # dim: cpar x p x 3
             par_operation_probs = par_operation_probs.gather(index=par_cat_ixs, dim=0)
             # dim: cpar*p x 3
             par_operation_probs = par_operation_probs.reshape(self.cpar*self.p, 3)
             opAa_probs = par_operation_probs[:, 0]
             opAb_probs = par_operation_probs[:, 1]
-            print("CEC par_operation_probs:", par_operation_probs)
 
             # P(c' | c, o)
             # dim: cpar*2 x cgen
@@ -400,13 +381,11 @@ class BasicCGInducer(nn.Module):
             gen_cat_probs = F.log_softmax(gen_cat_scores, dim=1)
             # dim: cpar x 2 x cgen
             gen_cat_probs = gen_cat_probs.reshape(self.cpar, 2, self.cgen)
-            print("CEC gen_cat_probs:", gen_cat_probs)
 
             par_cat_arg_depths = list()
             for cat in self.ix2cat_par.values():
                 par_cat_arg_depths.append(cat.arg_depth())
             par_cat_arg_depths = torch.tensor(par_cat_arg_depths)
-            print("CEC par_cat_arg_depths:", par_cat_arg_depths)
 
             # cpar x p x p x 1
             par_cat_arg_depths = par_cat_arg_depths.reshape(-1, 1, 1, 1)
@@ -415,21 +394,15 @@ class BasicCGInducer(nn.Module):
             # cat, pred pair
             # dim: cpar*p x p x 1
             par_cat_arg_depths = par_cat_arg_depths.reshape(self.cpar*self.p, self.p, 1)
-            print("CEC par_cat_arg_depths expanded:", par_cat_arg_depths)
-            print("CEC par_cat_arg_depths expanded shape:", par_cat_arg_depths.shape)
 
             assoc_stacked = torch.stack([self.assoc_arg1, self.assoc_arg2], dim=2)
             # dim: cpar*p x p x 2
-            print("CEC assoc_stacked:", assoc_stacked)
             assoc_stacked = assoc_stacked.repeat(self.cpar, 1, 1)
-            print("CEC assoc_stacked repeated:", assoc_stacked)
-            print("CEC assoc_stacked shape:", assoc_stacked.shape)
 
             # P (p' | c, p)
             gen_pred_probs = assoc_stacked.gather(index=par_cat_arg_depths, dim=2)
             # dim: cpar*p x p
             gen_pred_probs = torch.log(gen_pred_probs.squeeze(dim=-1))
-            print("CEC gen_pred_probs:", gen_pred_probs)
 
             # P(c', p', o=Aa | c, p)
             # dim: cpar*p x 1
@@ -441,14 +414,8 @@ class BasicCGInducer(nn.Module):
             # dim: cpar*p x cgen*p
             pred_expand = gen_pred_probs.repeat(1, self.cgen)
             # P(c', p', o=Ab | c, p)
-            print("CEC op_expand:", op_expand)
-            print("CEC op_expand shape:", op_expand.shape)
-            print("CEC cat_expand:", cat_expand)
-            print("CEC cat_expand shape:", cat_expand.shape)
-            print("CEC pred_expand:", pred_expand)
-            print("CEC pred_expand shape:", pred_expand.shape)
             full_G_Aa = op_expand + cat_expand + pred_expand
-            print("CEC full_G_Aa:", full_G_Aa)
+            self.full_G_Aa = full_G_Aa
 
             # P(c', p', o=Ab | c, p)
             # dim: cpar*p x 1
@@ -457,26 +424,24 @@ class BasicCGInducer(nn.Module):
             cat_expand = gen_cat_probs[:, 1, :].repeat_interleave(self.p, dim=0)
             # dim: cpar*p x cgen*p
             cat_expand = cat_expand.repeat_interleave(self.p, dim=1)
-            print("CEC op_expand shape:", op_expand.shape)
-            print("CEC cat_expand shape:", cat_expand.shape)
-            print("CEC pred_expand shape:", pred_expand.shape)
             # P(c', p', o=Ab | c, p)
             full_G_Ab = op_expand + cat_expand + pred_expand
-            print("CEC full_G_Ab:", full_G_Ab)
+            self.full_G_Ab = full_G_Ab
 
             self.parser.set_models(
-                root_scores,
-                full_G_Aa,
-                full_G_Ab,
-                opLex_probs
+                self.root_scores,
+                self.full_G_Aa,
+                self.full_G_Ab,
+                self.opLex_probs
             )
 
         # v x c*p
         #dist = F.softmax(self.word_mlp(self.catpred_emb), dim=1).t()
         dist = F.log_softmax(self.word_mlp(self.catpred_emb), dim=1).t()
+        # for grammar dump in main.py
+        self.word_dist = dist.t()
         # batch x sentlen x c*p
         x = dist[x, :]
-        printDebug("CEC x shape:", x.shape)
         #x = self.emit_prob_model(x, self.all_predcat_emb, set_grammar=set_grammar)
         if argmax:
             if eval and self.device != self.eval_device:

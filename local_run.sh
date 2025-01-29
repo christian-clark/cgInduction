@@ -4,7 +4,8 @@ MODEL=catsEatAnts
 MODE=train
 LOSS_TYPE=marginal
 #LOSS_TYPE=best_parse
-MAX_EPOCH=2
+# 40 mins for 5000 epochs
+MAX_EPOCH=10
 # "default" learning rate
 LEARNING_RATE=0.0001
 #LEARNING_RATE=1
@@ -13,7 +14,6 @@ MODEL_TYPE=word
 DUMP_GRAMMAR=yes
 BATCH_SIZE=100
 #USE_ENTROPY_LOSS=yes
-ENTROPY_LOSS_WEIGHT=0.997
 ASSOC_ARG1=/mnt/c/Users/cecla/Documents/git/cgInduction/inputs/assoc_arg1
 ASSOC_ARG2=/mnt/c/Users/cecla/Documents/git/cgInduction/inputs/assoc_arg2
 PREDICATES=/mnt/c/Users/cecla/Documents/git/cgInduction/inputs/predicates
@@ -38,5 +38,3 @@ python3 /mnt/c/Users/cecla/Documents/git/cgInduction/main.py $MODE \
     eval_device=$EVAL_DEVICE \
     use_entropy_loss=$USE_ENTROPY_LOSS \
     model=$MODEL
-
-#entropy_loss_weight=$ENTROPY_LOSS_WEIGHT \
