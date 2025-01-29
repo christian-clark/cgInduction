@@ -1,4 +1,5 @@
 from bidict import bidict
+import logging
 from collections import defaultdict
 import csv
 import numpy as np
@@ -271,7 +272,6 @@ class BasicCGInducer(nn.Module):
                     pred_valence_mask[i, j] = 0
 
         self.root_cat_mask = root_cat_mask.to(self.device)
-        self.pred_valence_mask = pred_valence_mask.to(self.device)
 
     def init_functor_lookup_tables(self):
         # given a parent/result (cat, pred) index (i) and an argument/
@@ -357,8 +357,6 @@ class BasicCGInducer(nn.Module):
             operation_probs = F.log_softmax(
                 operation_scores+zero_valence_mask, dim=1
             )
-            # used for grammar dump in main.py
-            self.operation_probs = operation_probs
             # dim: call*p
             opLex_probs = operation_probs[:, 2]
             self.opLex_probs = opLex_probs
@@ -372,6 +370,8 @@ class BasicCGInducer(nn.Module):
             par_operation_probs = par_operation_probs.gather(index=par_cat_ixs, dim=0)
             # dim: cpar*p x 3
             par_operation_probs = par_operation_probs.reshape(self.cpar*self.p, 3)
+            # used for grammar dump in main.py
+            self.par_operation_probs = par_operation_probs
             opAa_probs = par_operation_probs[:, 0]
             opAb_probs = par_operation_probs[:, 1]
 
@@ -381,6 +381,10 @@ class BasicCGInducer(nn.Module):
             gen_cat_probs = F.log_softmax(gen_cat_scores, dim=1)
             # dim: cpar x 2 x cgen
             gen_cat_probs = gen_cat_probs.reshape(self.cpar, 2, self.cgen)
+            # used for grammar dump in main.py
+            self.gen_cat_probs_Aa = gen_cat_probs[:, 0, :]
+            # used for grammar dump in main.py
+            self.gen_cat_probs_Ab = gen_cat_probs[:, 1, :]
 
             par_cat_arg_depths = list()
             for cat in self.ix2cat_par.values():

@@ -1,7 +1,8 @@
 import torch.nn as nn
 import torch.distributions
+import logging
 
-DEBUG = False
+DEBUG = True
 
 def printDebug(*args, **kwargs):
     if DEBUG:
@@ -27,6 +28,7 @@ class TopModel(nn.Module):
             indices=indices,
             set_grammar=set_grammar
         )
+        logging.info("parse structure_loss: {}".format(structure_loss))
         return structure_loss.sum().item(), vtree_list
 
 
@@ -37,4 +39,5 @@ class TopModel(nn.Module):
             indices=indices,
             set_grammar=set_grammar
         )
+        logging.info("likelihood structure_loss: {}".format(structure_loss))
         return structure_loss.sum().item()

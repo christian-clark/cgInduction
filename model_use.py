@@ -4,7 +4,7 @@ import time
 import logging
 import numpy as np
 
-DEBUG = False
+DEBUG = True
 
 def printDebug(*args, **kwargs):
     if DEBUG:

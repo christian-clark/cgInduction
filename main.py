@@ -291,24 +291,27 @@ def train():
 
                 logging.info("valences: {}".format(model.inducer.valences))
                 logging.info("root_cat_mask: {}".format(model.inducer.root_cat_mask))
-                logging.info("pred_valence_mask: {}".format(model.inducer.pred_valence_mask))
 
                 logging.info("root probs")
                 logging.info(torch.exp(model.inducer.parser.root_scores))
 
                 logging.info("operation probs")
-                logging.info(torch.exp(model.inducer.operation_probs))
+                logging.info(torch.exp(model.inducer.par_operation_probs))
 
                 logging.info("assoc_arg1")
                 logging.info(model.inducer.assoc_arg1)
                 logging.info("assoc_arg2")
                 logging.info(model.inducer.assoc_arg2)
 
-                logging.info("full_G_Aa")
-                logging.info(torch.exp(model.inducer.full_G_Aa))
-
-                logging.info("full_G_Ab")
-                logging.info(torch.exp(model.inducer.full_G_Ab))
+                logging.info("gen_cat_probs_Aa")
+                logging.info(torch.exp(model.inducer.gen_cat_probs_Aa))
+                logging.info("gen_cat_probs_Ab")
+                logging.info(torch.exp(model.inducer.gen_cat_probs_Ab))
+#                logging.info("full_G_Aa")
+#                logging.info(torch.exp(model.inducer.full_G_Aa))
+#
+#                logging.info("full_G_Ab")
+#                logging.info(torch.exp(model.inducer.full_G_Ab))
 
                 logging.info("word_dist")
                 logging.info(torch.exp(model.inducer.word_dist))

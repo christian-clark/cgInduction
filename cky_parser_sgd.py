@@ -194,7 +194,6 @@ class BatchCKYParser:
 #                imax, batch_size, self.cpar, self.p, self.cgen, self.p
 #            )
 #            printDebug("scores_rarg shape:", scores_rarg.shape)
-
             # dim: imax x batch_size x qpar x qgen
             rfunc_ixs = self.rfunc_ixs.repeat(imax, batch_size, 1, 1)
 #            rfunc_ixs = rfunc_ixs.unsqueeze(dim=3).unsqueeze(dim=-1)
@@ -250,33 +249,47 @@ class BatchCKYParser:
             # dim: imax x batch_size x qpar x qgen
             y1 = y1.reshape(imax, batch_size, self.qpar, self.qgen)
             # marginalize over gen categories
+            # dim: imax x batch_size x qpar
             y1 = torch.logsumexp(y1, dim=3)
             # dim: imax x batch_size x cpar x p
-            y1 = y1.reshape(imax, batch_size, self.cpar, self.p)
+            #y1 = y1.reshape(imax, batch_size, self.cpar, self.p)
 
             # before this, y1 just contains probabilities for the qpar
             # possible parents.
             # But left_chart and right_chart maintain all Qall
             # categories, so pad y1 to get it up to that size
 
-            # dim: imax x batch_size x call x p
+            # dim: imax x batch_size x qall
             y1_expanded = torch.full(
-                (imax, batch_size, self.call, self.p), fill_value=-QUASI_INF
+                (imax, batch_size, self.qall), fill_value=-QUASI_INF
             ).to(self.device)
 
-            # indices for predcats that can be parents
-            # dim: cpar
-            par_ixs = torch.tensor(
-                [self.ix2cat.inv[c] for c in self.ix2cat_par.values()]
-            ).to(self.device)
-            # dim: imax x batch_size x cpar x p
-            par_ixs = par_ixs.unsqueeze(-1).repeat(
-                imax, batch_size, 1, self.p
-            )
-            # dim: imax x batch_size x call x p
-            y1_expanded = y1_expanded.scatter(dim=-1, index=par_ixs, src=y1)
-            # dim: imax x batch_size x call*p
-            y1_expanded = y1_expanded.reshape(imax, batch_size, self.call*self.p)
+            # maps (cat, pred) index from qpar to qall
+            qpar_2_qall = list()
+            for i in range(self.qpar):
+                pix = i % self.p
+                cix = i // self.p
+                cix_all = self.ix2cat.inv[self.ix2cat_par[cix]]
+                ix_all = cix_all*self.p + pix
+                qpar_2_qall.append(ix_all)
+            qpar_2_qall = torch.tensor(qpar_2_qall)
+
+            # dim: imax x batch_size x qpar
+            qpar_2_qall = qpar_2_qall.repeat(imax, batch_size, 1)
+
+#            # indices for predcats that can be parents
+#            # dim: cpar
+#            par_ixs = torch.tensor(
+#                [self.ix2cat.inv[c] for c in self.ix2cat_par.values()]
+#            ).to(self.device)
+#            # dim: imax x batch_size x cpar x p
+#            par_ixs = par_ixs.unsqueeze(-1).repeat(
+#                imax, batch_size, 1, self.p
+#            )
+            # dim: imax x batch_size x qall
+            y1_expanded = y1_expanded.scatter(dim=-1, index=qpar_2_qall, src=y1)
+#            # dim: imax x batch_size x call*p
+#            y1_expanded = y1_expanded.reshape(imax, batch_size, self.call*self.p)
             left_chart[height, imin:imax] = y1_expanded
             right_chart[height, jmin:jmax] = y1_expanded
         return left_chart, None
