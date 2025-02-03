@@ -30,8 +30,15 @@ class TopModel(nn.Module):
         )
         structure_loss = torch.sum(logprob_list, dim=0)
 
-        total_loss = structure_loss
-        return total_loss
+        # dim: vocab x cats
+        word_dist = self.inducer.emit_prob_model.dist
+        # word_dist is log transformed. So entropy is exp(x) * x
+        word_dist_entropy = torch.sum(torch.exp(word_dist)*word_dist, dim=[0, 1]).item()
+        structure_loss = structure_loss.sum().item()
+        combined_loss = word_dist_entropy + structure_loss
+
+        #total_loss = structure_loss
+        return combined_loss
 
 
     def parse(self, word_inp, chars_var_inp, indices, eval=False, set_grammar=True):
@@ -45,7 +52,6 @@ class TopModel(nn.Module):
             )
         else:
             assert self.inducer.model_type == 'word'
-            printDebug("word input: {}".format(word_inp))
             structure_loss, vtree_list, _, _ = self.inducer.forward(
                 word_inp,
                 eval,
@@ -53,7 +59,14 @@ class TopModel(nn.Module):
                 indices=indices,
                 set_grammar=set_grammar
             )
-        return structure_loss.sum().item(), vtree_list
+        # dim: vocab x cats
+        word_dist = self.inducer.emit_prob_model.dist
+        # word_dist is log transformed. So entropy is exp(x) * x
+        word_dist_entropy = torch.sum(torch.exp(word_dist)*word_dist, dim=[0, 1]).item()
+        structure_loss = structure_loss.sum().item()
+        combined_loss = word_dist_entropy + structure_loss
+        #return structure_loss.sum().item(), vtree_list
+        return combined_loss, vtree_list
 
 
     def likelihood(self, word_inp, chars_var_inp, indices, set_grammar=True):
@@ -72,5 +85,11 @@ class TopModel(nn.Module):
                 indices=indices,
                 set_grammar=set_grammar
             )
+        # dim: vocab x cats
+        word_dist = self.inducer.emit_prob_model.dist
+        # word_dist is log transformed. So entropy is exp(x) * x
+        word_dist_entropy = torch.sum(torch.exp(word_dist)*word_dist, dim=[0, 1]).item()
+        structure_loss = structure_loss.sum().item()
+        combined_loss = word_dist_entropy + structure_loss
         return structure_loss.sum().item()
 

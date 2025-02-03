@@ -477,6 +477,10 @@ class BatchCKYParser:
         while expanding_nodes:
             working_node = expanding_nodes.pop()
             ij_diff = working_node.j - working_node.i - 1
+            printDebug("ij_diff:", ij_diff)
+            printDebug("working_node.i:", working_node.i)
+            printDebug("sent_index:", sent_index)
+            printDebug("working_node.cat:", working_node.cat)
             k_b_c = backtrack_chart[ij_diff][ working_node.i, sent_index,
                                                         working_node.cat]
             split_point, b, c = k_b_c[0].item(), k_b_c[1].item(), k_b_c[2].item()
