@@ -32,7 +32,7 @@ class CGNode:
         if self.is_primitive():
             return 0
         else:
-            return 1 + self.res_arg[1].get_depth()
+            return 1 + self.res_arg[0].get_depth()
 
     def is_modifier(self):
         # u-av categories can be modifiers

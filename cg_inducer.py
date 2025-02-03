@@ -1,4 +1,4 @@
-import bidict, csv, numpy as np, torch, torch.nn.functional as F
+import bidict, csv, math, numpy as np, torch, torch.nn.functional as F
 from torch import nn
 from cky_parser_sgd import BatchCKYParser
 from char_coding_models import ResidualLayer, WordProbFCFixVocabCompound
@@ -273,13 +273,13 @@ class BasicCGInducer(nn.Module):
             #printDebug("sampled trees:", sampled_trees)
             #printDebug("sampled tree logprobs", tree_logprobs)
             # dim: batch_size x samples
-            biased_logprobs = self.get_biased_logprobs(words, sampled_trees, tree_logprobs)
+            biased_logprobs = self.get_biased_logprobs(words, sampled_trees)
             #printDebug("sampled tree logprobs with bias:", biased_logprobs)
-            # sum logprobs over sampled trees for each sentence
-            # logsumexp over sampled trees will give the log prob of all the 
-            # samples together
-            # dim: batch_size
-            return biased_logprobs.logsumexp(dim=1) * -1
+            # logprob_list is the marginal probabiity from the parse, and the
+            # latter two terms are the (estimated) expected association score
+            printDebug("forward chart logprobs:", logprob_list)
+            printDebug("forward assoc score:", biased_logprobs.logsumexp(dim=1) - math.log(self.sample_count)) 
+            return (logprob_list + biased_logprobs.logsumexp(dim=1) - math.log(self.sample_count)) * -1
 
     def sample_from_chart(self, left_chart, right_chart):
         printDebug("sampling...")
@@ -601,6 +601,8 @@ class BasicCGInducer(nn.Module):
                         rcat = gencat_allix
 
                     if op < 2:
+                        printDebug("functor cat for arg attachment:", self.ix2cat[impcat.item()])
+                        printDebug("depth:", self.ix2cat[impcat.item()].get_depth())
                         functor_depth = self.ix2cat[impcat.item()].get_depth()
                     else:
                         functor_depth = -1
@@ -726,7 +728,7 @@ class BasicCGInducer(nn.Module):
         #printDebug("new score:", new_score)
         score += new_score
     
-    def get_biased_logprobs(self, words, sampled_trees, tree_logprobs):
+    def get_biased_logprobs(self, words, sampled_trees):
         printDebug("getting biased logprobs...")
         # elements of sampled trees: batch items
         # elements of sampled_trees[i]: samples for a single batch item
@@ -736,9 +738,11 @@ class BasicCGInducer(nn.Module):
         # dim of words: batch x sentlen
         #printDebug("words:", words)
         # dim: batch_size x samples
-        biased_logprobs = tree_logprobs.clone()
+        batchsize = len(sampled_trees)
+        samples = len(sampled_trees[0])
+        biased_logprobs = torch.zeros((batchsize, samples))
         #printDebug("biased_logprobs shape:", biased_logprobs.shape)
-        batchsize = words.shape[0]
+        #batchsize = words.shape[0]
         sentlen = words.shape[1]
         # dim: batch x sentlen x d
         all_word_embs = self.word_emb(words)
@@ -759,8 +763,9 @@ class BasicCGInducer(nn.Module):
             word_embs = all_word_embs[i]
             #printDebug("embeddings:", word_embs)
             for j, sample in enumerate(sent):
+                printDebug("sample ix:", j)
                 # dim: sent_len x d
-                curr_vecs = word_embs
+                curr_vecs = word_embs.clone()
                 constituent_boundaries = list([i, i+1] for i in range(sentlen))
                 # dim: sent_len x 2
                 constituent_boundaries = torch.tensor(constituent_boundaries)
@@ -778,6 +783,5 @@ class BasicCGInducer(nn.Module):
                     printDebug("current vecs now:", curr_vecs)
                     printDebug("constituent boundaries now:", constituent_boundaries)
                 printDebug("score after steps:", score)
-                printDebug("biased logprobs i j", biased_logprobs[i, j])
-                biased_logprobs[i, j] += score[0]
+                biased_logprobs[i, j] = score[0]
         return biased_logprobs

@@ -24,7 +24,7 @@ DEFAULT_CONFIG = {
         "batch_size": 2,
         "max_vocab_size": 150000,
         "eval_steps": 2,
-        "eval_start_epoch": 1,
+        "eval_start_epoch": 0,
         "start_epoch": 0,
         "max_epoch": 20,
         "logfile": "log.txt.gz",
