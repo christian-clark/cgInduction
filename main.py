@@ -31,7 +31,8 @@ DEFAULT_CONFIG = {
         "model_type": "word",
         "rnn_hidden_dim": 512,
         "state_dim": 64,
-        "eval_patient": 5
+        "eval_patient": 5,
+        "dump_grammar": "no"
     }
 }
 
@@ -238,7 +239,7 @@ def setup(eval_only=False):
     logging.info(
         "Examples of categories: {}".format(list(parser.ix2cat.items())[:100])
     )
-    model = TopModel(parser, writer)
+    model = TopModel(parser, config, writer)
 
     logging.info(str(model))
     num_grammar_params = 0
@@ -355,6 +356,16 @@ def train():
                 patient += 1
                 if patient >= config.getint("eval_patient"):
                     break
+
+            if config.getboolean("dump_grammar"):
+                torch.set_printoptions(profile="full")
+                print("================ START GRAMMAR DUMP ================")
+                print("P(w | c, Term=0):")
+                #print(torch.exp(model.inducer.emit_prob_model.dist))
+                wdist = torch.exp(model.inducer.emit_prob_model.dist)
+                for cat in range(wdist.shape[1]):
+                    print(torch.sort(wdist[:, cat], descending=True)[0][:10])
+                print("================ END GRAMMAR DUMP ================")
 
     model.writer.close()
     logfile_fh.close()
