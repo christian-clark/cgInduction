@@ -1,8 +1,5 @@
-# import numpy as np
-import torch, logging, datetime
+import torch
 from treenode import Node, nodes_to_tree
-import torch.nn.functional as F
-import numpy as np
 
 
 DEBUG = False
@@ -20,19 +17,19 @@ def logsumexp_multiply(a, b):
     return res.log() + max_a + max_b
 
 
-# for dense grammar only! ie D must be -1
 class BatchCKYParser:
     def __init__(
         self, ix2cat, lfunc_ixs, rfunc_ixs, larg_mask, rarg_mask, qall, qres,
         qarg, device="cpu"
     ):
+        # TODO rename or remove D and K
         self.D = -1
-        # TODO is this correct?
         self.K = qres
-        self.lexis = None # Preterminal expansion part of the grammar (this will be dense)
-        self.G = None     # Nonterminal expansion part of the grammar (usually be a sparse matrix representation)
+        # Preterminal expansion part of the grammar
+        self.lexis = None 
+        # Nonterminal expansion part of the grammar
+        self.G = None
         self.p0 = None
-        # self.viterbi_chart = np.zeros_like(self.chart, dtype=np.float32)
         self.ix2cat = ix2cat
         self.lfunc_ixs = lfunc_ixs
         self.rfunc_ixs = rfunc_ixs
@@ -42,9 +39,6 @@ class BatchCKYParser:
         self.Qres = qres
         self.Qarg = qarg
         self.this_sent_len = -1
-        self.counter = 0
-        self.vocab_prob_list = []
-        self.finished_vocab = set()
         if torch.cuda.is_available() and device == 'cuda':
             self.device = 'cuda'
         else:
@@ -52,13 +46,13 @@ class BatchCKYParser:
 
     # TODO rename pcfg_split
     def set_models(
-            self, p0, expansion_larg, expansion_rarg, emission, pcfg_split=None
+            self, p0, expansion_larg, expansion_rarg, emission, split_scores=None
         ):
         self.log_G_larg = expansion_larg
         self.log_G_rarg = expansion_rarg
         self.log_p0 = p0
         self.log_lexis = emission
-        self.pcfg_split = pcfg_split
+        self.split_scores = split_scores
 
 
     def marginal(self, sents, viterbi_flag=False, only_viterbi=False, sent_indices=None):
@@ -97,7 +91,6 @@ class BatchCKYParser:
             vtree_list, vproduction_counter_dict_list, vlr_branches_list = [None]*len(sents), [None]*len(sents), \
                                                                  [None]*len(sents)
 
-        self.counter+=1
         return logprob_list, vtree_list, vproduction_counter_dict_list, vlr_branches_list
 
 
@@ -523,8 +516,8 @@ class BatchCKYParser:
         else:
             lexis_probs = self.log_lexis.log_prob(sent_embs) # sentlen, batch, terms
         # print('lexical', lexis_probs)
-        if self.pcfg_split is not None:
-            lexis_probs = lexis_probs + self.pcfg_split[:, 1] # sentlen, batch, p
+        if self.split_scores is not None:
+            lexis_probs = lexis_probs + self.split_scores[:, 1] # sentlen, batch, p
             full_lexis_probs = lexis_probs
         else:
             full_lexis_probs = torch.full((lexis_probs.shape[0], lexis_probs.shape[1], self.K), SMALL_NEGATIVE_NUMBER,

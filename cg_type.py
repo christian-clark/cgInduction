@@ -1,4 +1,5 @@
-import json, bidict, sys
+import bidict
+from copy import deepcopy
 from itertools import product as prod
 
 
@@ -10,7 +11,9 @@ def printDebug(*args, **kwargs):
 
 
 class CGNode:
-    def __init__(self, val=None, res=None, arg=None):
+    def __init__(self, val=None, res=None, arg=None, side=None, cdepth=None):
+        self.side = side
+        self.cdepth = cdepth
         if val is None:
             self.val = "x"
         else:
@@ -22,13 +25,21 @@ class CGNode:
             assert arg is not None
             self.res_arg = (res, arg)
 
+    def set_side(self, side):
+        assert side in {"L", "R"}
+        self.side = side
+
+    def set_cdepth(self, cdepth):
+        self.cdepth = cdepth
+
     def is_primitive(self):
         return self.res_arg is None
 
     def __str__(self):
         stack, out = list(), list()
         CGNode._build_str(self, stack, out)
-        return "".join(out)
+        raw_cat = "".join(out)
+        return "{}.{}.c{}".format(raw_cat, self.side, self.cdepth)
 
     @staticmethod
     def _build_str(node, stack, out):
@@ -47,6 +58,8 @@ class CGNode:
         return str(self)
 
     def __eq__(self, other):
+        if self.side != other.side: return False
+        if self.cdepth != other.cdepth: return False
         if self.is_primitive():
             return other.is_primitive() and self.val == other.val
         elif other.is_primitive(): return False
@@ -70,6 +83,9 @@ class CGNode:
 def generate_categories_by_depth(
     num_primitives, max_depth, max_arg_depth=None
 ):
+    # this function is not currently implemented to supoprt a depth
+    # bound
+    raise NotImplementedError
     OPERATORS = ["-a", "-b"]
     if max_arg_depth is None:
         max_arg_depth = max_depth
@@ -158,23 +174,38 @@ def category_from_string(string):
     return return_cgnode
 
 
-def read_categories_from_file(f):
+def read_categories_from_file(f, max_cdepth):
     all_cats = set()
     for l in open(f):
-        cat = category_from_string(l.strip())
-        if cat in all_cats:
-            printDebug("warning: category {} is duplicated".format(cat))
-        else:
-            all_cats.add(cat)
+        raw_cat = category_from_string(l.strip())
+        for side in ["L", "R"]:
+            for cdepth in range(max_cdepth+1):
+                cat = deepcopy(raw_cat)
+                cat.set_side(side)
+                cat.set_cdepth(cdepth)
+                if cat in all_cats:
+                    printDebug("warning: category {} is duplicated".format(cat))
+                else:
+                    all_cats.add(cat)
     res_cats = set()
     arg_cats = set()
+    print("all cats:")
+    print(sorted(list(all_cats)))
     for cat in all_cats:
         if cat.is_primitive(): continue
-        res, arg = cat.res_arg
-        if not res in all_cats or not arg in all_cats:
-            raise Exception("if category (res)(op)(arg) is in the list, res and arg must be in the list too")
-        res_cats.add(res)
-        arg_cats.add(arg)
+        raw_res, raw_arg = cat.res_arg
+        for side in ["L", "R"]:
+            for cdepth in range(max_cdepth+1):
+                res = deepcopy(raw_res)
+                res.set_side(side)
+                res.set_cdepth(cdepth)
+                res_cats.add(res)
+                arg = deepcopy(raw_arg)
+                arg.set_side(side)
+                arg.set_cdepth(cdepth)
+                arg_cats.add(arg)
+                if not res in all_cats or not arg in all_cats:
+                    raise Exception("if category (res)(op)(arg) is in the list, res and arg must be in the list too")
     # categories that can be arguments or results come first in ix2cat
     ix2cat = bidict.bidict()
     res_arg_cats = res_cats.union(arg_cats)
@@ -183,5 +214,10 @@ def read_categories_from_file(f):
     for cat in all_cats - res_arg_cats:
         ix2cat[len(ix2cat)] = cat
     assert len(ix2cat) == len(all_cats)
+    print("res cats:")
+    print(list(sorted(res_cats)))
+    print("arg cats:")
+    print(list(sorted(arg_cats)))
+    raise Exception
     return all_cats, res_cats, arg_cats, ix2cat
 

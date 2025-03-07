@@ -44,6 +44,9 @@ class BasicCGInducer(nn.Module):
         self.max_func_depth = config.getint("max_func_depth", fallback=None)
         self.max_arg_depth = config.getint("max_arg_depth", fallback=None)
         self.cats_list = config.get("category_list", fallback=None)
+        # don't use getint so that this throws an error if the key isn't in
+        # config
+        self.max_cdepth = int(config["max_center_embedding_depth"])
         self.arg_depth_penalty = config.getfloat(
             "arg_depth_penalty", fallback=None
         )
@@ -53,7 +56,9 @@ class BasicCGInducer(nn.Module):
 
         # option 1: specify a set of categories according to maximum depth
         # and number of primitives (used in 2023 ACL Findings paper)
+        # currently deprecated for depth-bounded system
         if self.num_primitives is not None:
+            raise NotImplementedError()
             assert self.max_func_depth is not None
             assert self.cats_list is None
             if self.max_arg_depth is None:
@@ -201,7 +206,7 @@ class BasicCGInducer(nn.Module):
 
     def init_cats_from_list(self):
         all_cats, res_cats, arg_cats, ix2cat = read_categories_from_file(
-            self.cats_list
+            self.cats_list, self.max_cdepth
         )
 
         res_arg_cats = res_cats.union(arg_cats)
@@ -353,7 +358,7 @@ class BasicCGInducer(nn.Module):
                 full_G_larg,
                 full_G_rarg,
                 self.emission,
-                pcfg_split=split_scores
+                split_scores=split_scores
             )
 
 
